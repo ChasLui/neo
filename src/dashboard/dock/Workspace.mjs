@@ -446,10 +446,28 @@ class Workspace extends Container {
      * the PREVIOUS refresh — or `null`, on a shell projected statically before any commit. A consumer
      * that needs the refresh a specific change scheduled must await that change's own promise first;
      * reading this field at call time reads the one before it.
+     *
+     * The projection repair ({@link #onDockProjectionFailed}) is one more chained writer: it joins
+     * this tail as a commit does and stands down once {@link #scheduledProjection} has moved on.
      * @member {Promise|null} refreshPromise=null
      * @protected
      */
     refreshPromise = null
+
+    /**
+     * The most recent scheduling through {@link #projectDockZoneDocument}, as `{document}` with the
+     * committed document held by identity; `null` until the funnel has run once, so a host whose
+     * projections were all direct calls still repairs. A projection repair compares the snapshot it
+     * failed on against this record and stands down when a newer commit has been scheduled since,
+     * the `null` document (the clear) included: that commit's projection, serialized after the
+     * failure, is the repair. A record rather than the bare document, because a field that starts
+     * out `null` cannot tell a scheduled clear from nothing scheduled yet; identity rather than
+     * {@link #dockModel}, which the plain path assigns after the funnel returns and the Group path
+     * leaves to the consumer's `setDocument`.
+     * @member {Object|null} scheduledProjection=null
+     * @protected
+     */
+    scheduledProjection = null
 
     /**
      * @summary The Group-owned native lifecycle; this view contributes effects, not native state.
@@ -2516,6 +2534,10 @@ class Workspace extends Container {
         PerspectiveState.publishDocument(me, document);
         me.dockHeaderActionPolicy?.publishDocument(document);
 
+        // Recorded before the refresh is chained, so a repair the cycle in flight schedules sees this
+        // commit as the newer one and stands down — a `null` document, the clear, included.
+        me.scheduledProjection = {document};
+
         me.refreshPromise = tail
             .then(() => me.timeout(0))
             .then(() => {
@@ -2846,12 +2868,18 @@ class Workspace extends Container {
      * rejection: `onDockZoneDocumentChange` attaches its `.catch` to the PREVIOUS refresh, never the
      * one it is starting, so nothing on the live path ever saw the failure.
      *
-     * **Exactly one retry.** A deterministic failure must not hot-loop, so the re-projection carries
-     * `isDockProjectionRetry` and a second failure surfaces without scheduling a third attempt. The
-     * retry replaces `refreshPromise` rather than chaining onto it — the current value IS this cycle,
-     * and awaiting it from inside itself would never settle.
+     * **Exactly one retry, in line.** A deterministic failure must not hot-loop, so the re-projection
+     * carries `isDockProjectionRetry` and a second failure surfaces without scheduling a third
+     * attempt. The repair joins the settled tail of {@link #refreshPromise} as every commit does: a
+     * commit that landed while this cycle was in flight is queued there ahead of it, and a repair
+     * that replaced the tail instead ran beside that commit's projection — two reconciles over one
+     * host — once the projection suspended on a VDom-worker round-trip. It stands down when
+     * {@link #scheduledProjection} has moved on, to another document or to the clear, since that
+     * newer commit's projection is the repair and the failed snapshot must not re-project over it.
+     * Chaining awaits nothing from inside this cycle; the tail resolves when this cycle returns.
      * @param {Error} error The failure, marked `isDockProjectionFailure` with a `projectionRecovery` verdict.
-     * @param {Object} document The committed dock document the repair re-projects from.
+     * @param {Object} document The failed cycle's committed snapshot, re-projected only while it is
+     *     still the scheduled document.
      * @param {Object} tabInsertDescriptor
      * @param {Object} [refreshOptions={}]
      * @returns {null} Signals the caller that this cycle is over and was handled.
@@ -2877,14 +2905,18 @@ class Workspace extends Container {
         me.fire('dockProjectionFailed', {component: me, error, isRetry, recovery});
 
         if (!isRetry && !me.isDestroyed) {
-            me.refreshPromise = me.timeout(0).then(() => {
-                if (!me.isDestroyed) {
+            const tail = me.refreshPromise?.catch(() => {}) || Promise.resolve();
+
+            me.refreshPromise = tail
+                .then(() => me.timeout(0))
+                .then(() => {
+                    if (me.isDestroyed || (me.scheduledProjection && me.scheduledProjection.document !== document)) return;
+
                     return me.refreshDockWorkspace(tabInsertDescriptor, document, {
                         ...refreshOptions,
                         isDockProjectionRetry: true
                     })
-                }
-            })
+                })
         }
 
         return null
