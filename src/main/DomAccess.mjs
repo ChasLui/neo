@@ -29,11 +29,18 @@ const
     ],
 
     modifierKeys = {
-        Shift   : 1,
-        Alt     : 1,
-        Meta    : 1,
-        Control : 1
-    };
+        Shift  : 1,
+        Alt    : 1,
+        Meta   : 1,
+        Control: 1
+    },
+    /**
+     * @summary Identifies the JSON-safe viewport Rectangle accepted by floating alignment.
+     * @param {*} value
+     * @returns {Boolean}
+     */
+    isSerializedRectangle = value => Boolean(value) && !value.nodeType &&
+        ['x', 'y', 'width', 'height'].every(key => Number.isFinite(value[key]));
 
 /**
  * @class Neo.main.DomAccess
@@ -69,12 +76,14 @@ class DomAccess extends Base {
                 'focus',
                 'getAttributes',
                 'getBoundingClientRect',
+                'getChildNodeIds',
+                'getComputedStyle',
+                'getLayoutRect',
+                'getOffscreenCanvas',
                 'getScrollingDimensions',
                 'measure',
                 'monitorAutoGrow',
                 'monitorAutoGrowHandler',
-                'navigate',
-                'navigateTo',
                 'scrollBy',
                 'scrollIntoView',
                 'scrollTo',
@@ -82,8 +91,11 @@ class DomAccess extends Base {
                 'selectNode',
                 'setBodyCls',
                 'setStyle',
+                'startViewTransition',
                 'syncModalMask',
+                'transferCanvasToWorker',
                 'trapFocus',
+                'waitForAnimation',
                 'windowScrollTo'
             ]
         },
@@ -125,23 +137,35 @@ class DomAccess extends Base {
     }
 
     /**
+     * @summary Registers one alignment so it is re-resolved whenever its geometry inputs change.
+     *
+     * Observes the subject, the target, the target's offset parent and any constraining element with a
+     * shared `ResizeObserver`, and installs the document-level scroll and mutation listeners on first
+     * use. Every one of those paths re-enters `align()`, which is why that method must be idempotent
+     * for an unchanged result — a resync happens far more often than a real move.
      * @param {Object} alignSpec
      */
     addAligned(alignSpec) {
         const
-            me                   = this,
-            {id}                 = alignSpec,
-            aligns               = me._aligns || (me._aligns = new Map()),
-            resizeObserver       = me._alignResizeObserver || (me._alignResizeObserver = new ResizeObserver(me.syncAligns)),
-            {constrainToElement} = alignSpec;
+            me                                           = this,
+            {id}                                         = alignSpec,
+            aligns                                       = me._aligns || (me._aligns = new Map()),
+            resizeObserver                               = me._alignResizeObserver || (me._alignResizeObserver = new ResizeObserver(me.syncAligns)),
+            {constrainToElement, subject, targetElement} = alignSpec;
 
         // Set up listeners which monitor for changes
         if (!aligns.has(id)) {
-            // Realign when target's layout-controlling element changes size
-            resizeObserver.observe(alignSpec.offsetParent);
+            // The subject size participates in every alignment, including coordinate targets.
+            resizeObserver.observe(subject);
 
-            // Realign when align to target changes size
-            resizeObserver.observe(alignSpec.targetElement);
+            // Realign when the target's layout-controlling element changes size. `align()` stores
+            // `alignSpec.offsetParent = targetElement.offsetParent` — the TARGET's layout parent, which is
+            // null when the target is position:fixed (or the body/root). Guard against observing null —
+            // `ResizeObserver.observe(null)` throws "parameter 1 is not of type 'Element'".
+            alignSpec.offsetParent && resizeObserver.observe(alignSpec.offsetParent);
+
+            // Element targets can resize. Serialized viewport Rectangles have no physical node to observe.
+            targetElement && resizeObserver.observe(targetElement);
 
             // Realign when constraining element changes size
             if (constrainToElement) {
@@ -177,47 +201,78 @@ class DomAccess extends Base {
      * @param {String} [data.src=true]
      */
     addScript(data) {
-        let script = document.createElement('script');
-
         if (!data.hasOwnProperty('async')) {
             data.async = true
         }
 
-        Object.assign(script, data);
-
-        document.head.appendChild(script)
+        this.createAndAppendElement('script', data)
     }
 
     /**
+     * Shared DOM-element factory: creates an element of the given tag, assigns the props onto it via
+     * Object.assign, and appends it to document.head. The common primitive behind addScript() and
+     * loadScript() (loadStylesheet() can adopt it in a follow-up). Returns the element for any
+     * post-append work the caller needs.
+     * @param {String} tag The element tag, e.g. 'script'.
+     * @param {Object} props Properties assigned onto the element.
+     * @returns {Element} The created + appended element.
+     */
+    createAndAppendElement(tag, props) {
+        const element = document.createElement(tag);
+
+        Object.assign(element, props);
+        document.head.appendChild(element);
+
+        return element
+    }
+
+    /**
+     * @summary Aligns a physical subject to either an element or serialized viewport Rectangle.
      * @param {Object} data
+     * @param {String} data.id
+     * @param {String|HTMLElement|{x:Number,y:Number,width:Number,height:Number}} [data.target]
+     * @param {String|HTMLElement} [data.constrainTo]
      * @returns {Promise<void>}
      */
     async align(data) {
         const
-            me            = this,
-            {constrainTo} = data,
-            subject       = data.subject = me.getElement(data.id),
-            {style}       = subject,
-            align         = {...data},
-            lastAlign     = me._aligns?.get(data.id);
+            me             = this,
+            {constrainTo}  = data,
+            subject        = data.subject = me.getElement(data.id),
+            {style}        = subject,
+            align          = {...data},
+            lastAlign      = me._aligns?.get(data.id),
+            targetIsObject = typeof data.target === 'object' && !data.target?.nodeType,
+            targetIsRect   = isSerializedRectangle(data.target);
 
-        if (lastAlign) {
-            subject.classList.remove(`neo-aligned-${lastAlign.result.position}`)
-        }
+        // The previous zone class is NOT dropped here. Removing it before the zone search knows the
+        // new result means every resync passes through a classless frame, even when the zone is
+        // unchanged — and a class removed and re-added around a layout read does not resume a CSS
+        // animation, it destroys one and starts another (measured: `currentTime` 949ms -> `none` with
+        // zero animations -> a different Animation object at 0). The swap is therefore deferred to
+        // the point where the new position is known, and skipped entirely when it matches.
 
         // Release any constrainTo or matchSize sizing which may have been imposed
         // by a previous align call.
         me.resetDimensions(align);
 
-        // The Rectangle's align spec target and constrainTo must be Rectangles
-        align.target = me.getClippedRect({id : data.targetElement = me.getElementOrBody(data.target)});
+        data.targetElement = targetIsObject ? null : me.getElementOrBody(data.target);
+        data.targetRect    = targetIsRect ? new Rectangle(
+            data.target.x,
+            data.target.y,
+            data.target.width,
+            data.target.height
+        ) : null;
+
+        // Rectangle targets are already viewport geometry; element targets retain clipping semantics.
+        align.target = data.targetRect || (data.targetElement && me.getClippedRect({id: data.targetElement}));
 
         if (!align.target) {
             // Set the Component with id data.id to hidden : true
             return Neo.worker.App.setConfigs({id: data.id, hidden: true})
         }
 
-        data.offsetParent = data.targetElement.offsetParent;
+        data.offsetParent = data.targetElement?.offsetParent || null;
 
         if (constrainTo) {
             align.constrainTo = me.getBoundingClientRect({id : data.constrainToElement = me.getElementOrBody(constrainTo)})
@@ -229,9 +284,9 @@ class DomAccess extends Base {
             result = data.result = myRect.alignTo(align);
 
         Object.assign(style, {
-            top       : 0,
-            left      : 0,
-            transform : `translate(${result.x}px,${result.y}px)`
+            top      : 0,
+            left     : 0,
+            transform: `translate(${result.x}px,${result.y}px)`
         });
 
         if (result.width !== myRect.width) {
@@ -242,8 +297,22 @@ class DomAccess extends Base {
             style.height = `${result.height}px`
         }
 
-        // Place box shadow at correct edge
-        subject.classList.add(`neo-aligned-${result.position}`);
+        // Place box shadow at correct edge. Swapped only on a real zone change, so an ordinary
+        // resync leaves the class — and anything keyed on it, including a CSS entrance animation and
+        // the shadow repaint — completely untouched.
+        const
+            previousPosition = lastAlign?.result?.position,
+            positionCls      = `neo-aligned-${result.position}`;
+
+        // Guarded on the SUBJECT, not on the cached align record. Keying off `lastAlign` looks
+        // equivalent and is not: a subject can lose the class without the record changing — a hidden
+        // menu is removed from the DOM and remounts as a fresh element, so it comes back classless
+        // while `_aligns` still reports the same zone. That guard silently never re-added the class,
+        // and a reused menu stayed unaligned for the rest of its life.
+        if (!subject.classList.contains(positionCls)) {
+            previousPosition && subject.classList.remove(`neo-aligned-${previousPosition}`);
+            subject.classList.add(positionCls)
+        }
 
         // Register an alignment to be kept in sync
         me.addAligned(data)
@@ -280,12 +349,16 @@ class DomAccess extends Base {
 
     /**
      * Calls focus() on a node for a given dom node id
-     * @param {Object} data
+     * @param {Object}  data
      * @param {Boolean} data.children
-     * @param {String} data.id
+     * @param {String}  data.id
+     * @param {String}  [data.modality] 'pointer' | 'keyboard' — explicit input-modality contract. :focus-visible
+     * cannot tie an async worker→main programmatic focus back to the originating pointer gesture, so the caller
+     * states it. Undefined preserves user-agent behavior.
+     * @param {Boolean} [data.preventScroll=false]
      * @returns {Object} obj.id => the passed id
      */
-    focus({children, id}) {
+    focus({children, id, modality, preventScroll}) {
         let node = this.getElement(id);
 
         if (node) {
@@ -296,7 +369,40 @@ class DomAccess extends Base {
             }
 
             if (node) {
-                node.focus();
+                // Modality is an explicit contract: :focus-visible cannot survive the async worker→main
+                // programmatic focus (and a tabindex=-1 node has no reliable user-agent ring to fall back on).
+                // The class is applied immediately before focus() so class + focus land atomically (no flash).
+                // 'pointer' suppresses the accidental ring; the first keydown without an intervening blur swaps
+                // it to the intentional keyboard ring; both self-clear on blur.
+                if (modality === 'pointer') {
+                    node.classList.add('neo-focus-pointer');
+
+                    const onKeydown = () => {
+                        node.classList.replace('neo-focus-pointer', 'neo-focus-keyboard');
+                        node.removeEventListener('keydown', onKeydown)
+                    };
+
+                    const onBlur = () => {
+                        node.classList.remove('neo-focus-pointer', 'neo-focus-keyboard');
+                        node.removeEventListener('keydown', onKeydown);
+                        node.removeEventListener('blur',    onBlur)
+                    };
+
+                    node.addEventListener('keydown', onKeydown);
+                    node.addEventListener('blur',    onBlur)
+                } else if (modality === 'keyboard') {
+                    node.classList.add('neo-focus-keyboard');
+                    node.classList.remove('neo-focus-pointer');
+
+                    const onBlur = () => {
+                        node.classList.remove('neo-focus-keyboard');
+                        node.removeEventListener('blur', onBlur)
+                    };
+
+                    node.addEventListener('blur', onBlur)
+                }
+
+                node.focus({preventScroll});
 
                 if (Neo.isNumber(node.selectionStart)) {
                     node.selectionStart = node.selectionEnd = node.value.length
@@ -343,6 +449,20 @@ class DomAccess extends Base {
     }
 
     /**
+     * Returns the ids of a node's direct element children, in DOM order.
+     * Consistency probe primitive: lets the App Worker compare its logical child order
+     * (items / vdom) against the rendered DOM truth (e.g. duplicate-node detection).
+     * @param {Object} data
+     * @param {String} data.id
+     * @returns {String[]|null} child ids (empty string for id-less nodes), or null if the node does not exist
+     */
+    getChildNodeIds(data) {
+        let node = document.getElementById(data.id);
+
+        return node ? Array.from(node.children).map(child => child.id) : null
+    }
+
+    /**
      * Returns node.getBoundingClientRect() for a given dom node id
      * @param {Object} data
      * @param {Array|String} data.id either an id or an array of ids
@@ -386,6 +506,69 @@ class DomAccess extends Base {
     }
 
     /**
+     * @summary Returns transform-immune layout-box metrics for a given dom node id.
+     *
+     * `getBoundingClientRect()` reports VISUAL (post-transform) geometry: while a presentation
+     * layer animates an ancestor (e.g. the DockFlip inverse-transform window), rect widths and
+     * heights are scaled fiction. Layout consumers that persist sizes (grid column generation,
+     * buffered mounting math) must read the LAYOUT box instead, which transforms never affect.
+     *
+     * The size contract, per node state:
+     * - Rendered box: fractional computed used values, normalized to border-box when an element
+     *   opts into content-box sizing.
+     * - No generated box (`display: none`, `display: contents`, detached subtree): the zero
+     *   shape — matching `getBoundingClientRect()`. Computed styles would report SPECIFIED
+     *   sizes for boxless nodes (phantom boxes), so this path never reads them.
+     * - Rendered box whose used value does not resolve to px (defensive narrowing): integer
+     *   `offsetWidth`/`offsetHeight` — still layout-truth, reduced precision.
+     *
+     * x/y are offset-parent-relative (`offsetLeft`/`offsetTop`). Use this for size and
+     * sibling-relative position semantics; use `getBoundingClientRect()` whenever viewport-space
+     * coordinates are required.
+     * @param {Object} data
+     * @param {Array|String} data.id either an id or an array of ids
+     * @returns {Object|Object[]} rect-shaped layout metrics ({x, y, left, top, right, bottom, width, height})
+     */
+    getLayoutRect(data) {
+        let me = this;
+
+        if (Array.isArray(data.id)) {
+            return data.id.map(id => me.getLayoutRect({id}))
+        }
+
+        let node       = me.getElementOrBody(data.nodeType ? data : data.id),
+            returnData = {};
+
+        if (node) {
+            if (node.getClientRects().length < 1) {
+                return {x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0}
+            }
+
+            let style  = node.ownerDocument.defaultView.getComputedStyle(node),
+                read   = property => parseFloat(style.getPropertyValue(property)) || 0,
+                width  = parseFloat(style.getPropertyValue('width')),
+                height = parseFloat(style.getPropertyValue('height')),
+                x      = node.offsetLeft,
+                y      = node.offsetTop;
+
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+                // Used width/height track the box-sizing mode; normalize to border-box metrics
+                if (style.getPropertyValue('box-sizing') === 'content-box') {
+                    width  += read('padding-left') + read('padding-right')  + read('border-left-width') + read('border-right-width');
+                    height += read('padding-top')  + read('padding-bottom') + read('border-top-width')  + read('border-bottom-width')
+                }
+            } else {
+                width  = node.offsetWidth;
+                height = node.offsetHeight
+            }
+
+            returnData = {x, y, left: x, top: y, right: x + width, bottom: y + height, width, height}
+        }
+
+        return returnData
+    }
+
+    /**
      * @param {Object|String} data
      * @returns {Neo.util.Rectangle}
      */
@@ -405,11 +588,75 @@ class DomAccess extends Base {
     }
 
     /**
-     * @param {String|HTMLElement} nodeId
-     * @returns {HTMLElement|null}
+     * @param {Object} data
+     * @param {String} data.id
+     * @param {String|String[]} data.style
+     * @returns {Object}
+     */
+    getComputedStyle({id, style}) {
+        let node   = this.getElement(id),
+            styles = {};
+
+        if (node) {
+            let computedStyle = window.getComputedStyle(node);
+
+            if (!Array.isArray(style)) {
+                style = [style]
+            }
+
+            style.forEach(prop => {
+                styles[prop] = computedStyle.getPropertyValue(prop)
+            })
+        }
+
+        return styles
+    }
+
+    /**
+     * @summary Awaits one named CSS animation on a physical node through the browser's Animation API.
+     *
+     * App-worker components can be born with an animation class before their local DOM listeners
+     * finish mounting. The main thread already owns the physical animation, so `Animation.finished`
+     * is the race-free settlement authority. A missing, already-finished, or cancelled animation
+     * resolves safely; presentation must never wedge projection truth.
+     * @param {Object} data
+     * @param {String} data.animationName CSS animation name to match on the node itself.
+     * @param {String} data.id Physical DOM node id.
+     * @returns {Promise<Boolean>} Whether a live named animation was observed.
+     */
+    async waitForAnimation({animationName, id}) {
+        let animation = this.getElement(id)?.getAnimations?.()
+            .find(candidate => candidate.animationName === animationName);
+
+        if (!animation) {
+            return false
+        }
+
+        try {
+            await animation.finished
+        } catch (error) {/* cancellation is settlement */}
+
+        return true
+    }
+
+    /**
+     * @param {String|HTMLElement|Window|Document} nodeId
+     * @returns {HTMLElement|Window|Document|null}
      * @protected
      */
     getElement(nodeId) {
+        if (nodeId === 'window') {
+            return globalThis
+        }
+
+        if (nodeId === 'document') {
+            return document
+        }
+
+        if (nodeId === 'document.body' || nodeId === 'body') {
+            return document.body
+        }
+
         let node = nodeId?.nodeType ?
             nodeId : Neo.config.useDomIds ?
                 document.getElementById(nodeId) :
@@ -428,7 +675,7 @@ class DomAccess extends Base {
             return null
         }
 
-        return nodeId.nodeType ? nodeId : (nodeId === 'body' || nodeId === 'document.body') ? document.body : this.getElement(nodeId)
+        return this.getElement(nodeId)
     }
 
     /**
@@ -483,19 +730,13 @@ class DomAccess extends Base {
      * @returns {Promise<unknown>}
      */
     loadScript(src, opts={defer:true}) {
-        let script;
-
         return new Promise((resolve, reject) => {
-            script = document.createElement('script');
-
-            Object.assign(script, {
+            this.createAndAppendElement('script', {
                 ...opts,
                 onerror: reject,
                 onload : resolve,
                 src
-            });
-
-            document.head.appendChild(script)
+            })
         })
     }
 
@@ -688,19 +929,27 @@ class DomAccess extends Base {
      * @param {String} data.id
      * @param {String} data.nodeId
      */
-    onGetOffscreenCanvas(data) {
-        let me        = this,
-            node      = me.getElement(data.nodeId),
+    getOffscreenCanvas(data) {
+        let me   = this,
+            node = me.getElement(data.nodeId),
+            offscreen;
+
+        if (!node) {
+            return {
+                result: {success: false}
+            }
+        }
+
+        try {
             offscreen = node.transferControlToOffscreen();
 
-        data.offscreen = offscreen;
-
-        Neo.worker.Manager.sendMessage(data.origin, {
-            action : 'reply',
-            data,
-            replyId: data.id,
-            success: true
-        }, [offscreen])
+            return {
+                result  : {offscreen},
+                transfer: [offscreen]
+            }
+        } catch (e) {
+            return {transferred: true}
+        }
     }
 
     /**
@@ -815,6 +1064,65 @@ class DomAccess extends Base {
             minWidth : align.configuredMinWidth,
             width    : align.configuredWidth
         })
+    }
+
+    /**
+     * @summary Starts a view transition, optionally revealing the new state from a point.
+     *
+     * Resolves once the transition has STARTED, deliberately not once it has finished. The caller
+     * applies its DOM change after this resolves, and `data.delay` is the window it has to do so
+     * before the new state is captured. Awaiting `transition.ready` here would close that window,
+     * and the transition would capture the unchanged DOM as both states.
+     *
+     * Built-in reveals own both snapshot layers' opacity and blending until the transition
+     * settles. Consumers need no cancellation CSS; raw `data.animate` payloads remain caller-owned.
+     * @param {Object} data
+     * @param {Object} [data.animate] Raw keyframes and options, passed to `animate()` unchanged
+     * @param {Number} [data.delay=50] Milliseconds the caller has to apply its DOM change
+     * @param {Object} [data.reveal] Origin for a circular reveal — see DomUtils.createRevealAnimation()
+     * @returns {Promise<Boolean>} False when the browser has no View Transition API
+     */
+    async startViewTransition(data) {
+        if (!document.startViewTransition) {
+            return false
+        }
+
+        const reveal     = data.animate ? null : DomUtils.createRevealAnimation(data.reveal),
+              animate    = data.animate || reveal,
+              effects    = [],
+              cleanup    = () => effects.forEach(effect => effect.cancel()),
+              transition = document.startViewTransition(async () => {
+                  // `??`, not `||`: `delay: 0` is a caller asking for no window at all.
+                  await this.timeout(data.delay ?? 50)
+              });
+
+        if (reveal) {
+            // Finished filled effects must survive until the pseudo tree is removed, including
+            // a zero-duration reveal. Cancel only our effects so later transitions start clean.
+            transition.finished.then(cleanup, cleanup)
+        }
+
+        if (animate) {
+            transition.ready.then(() => {
+                if (reveal) {
+                    for (const layer of [reveal.oldLayer, reveal]) {
+                        effects.push(document.documentElement.animate(layer.keyframes, layer.options))
+                    }
+                } else {
+                    document.documentElement.animate(animate.keyframes, animate.options)
+                }
+            }).catch(error => {
+                cleanup();
+                // Catches a rejected `ready` or a registration that throws — NOT a reveal that
+                // registers and then rasterises wrongly, which is what actually happened here and
+                // stays invisible to every runtime signal this method can read. The reveal is
+                // decorative, so a failure must not reject the transition; it must not be silent
+                // either, which is what returning success unconditionally amounted to.
+                console.warn('Neo.main.DomAccess: the view transition reveal was not applied.', error)
+            })
+        }
+
+        return true
     }
 
     /**
@@ -962,25 +1270,43 @@ class DomAccess extends Base {
     }
 
     /**
-     *
+     * @param {Event|ResizeObserverEntry[]} [arg1]
      */
-    syncAligns() {
+    syncAligns(arg1) {
         const
             me        = this,
-            {_aligns} = me;
+            {_aligns} = me,
+            isScroll  = arg1?.type === 'scroll',
+            evtTarget = isScroll ? arg1.target : null,
+            // Document scroll (window) target is document.
+            isDocScroll = isScroll && (evtTarget === document || evtTarget === document.documentElement);
 
         // Keep all registered aligns aligned on any detected change
         _aligns?.forEach(align => {
-            const targetPresent = document.contains(align.targetElement);
+            const
+                {targetElement} = align,
+                targetPresent   = targetElement ? document.contains(targetElement) : Boolean(align.targetRect);
 
             // Align subject and target still in the DOM - correct its alignment
             if (document.contains(align.subject) && targetPresent) {
+                // If it's a scroll event, optimization:
+                if (isScroll && !isDocScroll) {
+                    // If the scrolling element does NOT contain the reference target,
+                    // then the reference target did not move relative to viewport.
+                    const targetMoved = (targetElement && evtTarget.contains(targetElement)) ||
+                        (align.constrainToElement && evtTarget.contains(align.constrainToElement));
+
+                    if (!targetMoved) {
+                        return // Skip this alignment
+                    }
+                }
+
                 me.align(align)
             }
             // Align subject or target no longer in the DOM - remove it.
             else {
                 // If target is no longer in the DOM, hide the subject component
-                if (!targetPresent) {
+                if (targetElement && !targetPresent) {
                     Neo.worker.App.setConfigs({ id: align.id, hidden: true })
                 }
 
@@ -988,10 +1314,12 @@ class DomAccess extends Base {
                     {_alignResizeObserver} = me,
                     {constrainToElement}   = align;
 
-                // Stop observing the align elements
+                // Stop observing the align elements. `align.offsetParent` is the TARGET's layout parent
+                // (null when the target is position:fixed or the body/root) — never observed in that case,
+                // and unobserve(null) throws just like observe(null).
                 _alignResizeObserver.unobserve(align.subject);
-                _alignResizeObserver.unobserve(align.offsetParent);
-                _alignResizeObserver.unobserve(align.targetElement);
+                align.offsetParent && _alignResizeObserver.unobserve(align.offsetParent);
+                targetElement && _alignResizeObserver.unobserve(targetElement);
                 if (constrainToElement) {
                     _alignResizeObserver.unobserve(constrainToElement)
                 }
@@ -1027,6 +1355,37 @@ class DomAccess extends Base {
                 this.syncModalMask({ id: topmostModal.id, modal: true })
             } else {
                 this._modalMask?.remove()
+            }
+        }
+    }
+
+    /**
+     * @summary Extracts an OffscreenCanvas and transfers it directly to the Canvas Worker.
+     *
+     * This method implements a "Triangular Communication" pattern required to bypass a core limitation in Firefox Nightly (and potentially other browsers) regarding SharedWorkers.
+     * Firefox fails silently when attempting to transfer an `OffscreenCanvas` from the Main Thread to the App Worker (SharedWorker), and then again from the App Worker to the Canvas Worker.
+     * By calling this method, the Main Thread extracts the canvas and sends it directly to the Canvas Worker, bypassing the App Worker entirely for the buffer transfer.
+     *
+     * @param {Object} data
+     * @param {String} data.componentId
+     * @param {String} data.nodeId
+     */
+    transferCanvasToWorker({componentId, nodeId}) {
+        let me   = this,
+            node = me.getElement(nodeId);
+
+        if (node) {
+            try {
+                let offscreen = node.transferControlToOffscreen();
+
+                Neo.worker.Manager.sendMessage('canvas', {
+                    action: 'registerCanvasDirect',
+                    componentId,
+                    node  : offscreen,
+                    nodeId
+                }, [offscreen])
+            } catch (e) {
+                // Ignore, means the canvas was already transferred or we do not support it
             }
         }
     }

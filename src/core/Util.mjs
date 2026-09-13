@@ -112,7 +112,8 @@ class Util {
      * @returns {Boolean}
      */
     static isEmpty(value) {
-        if (value === null || value === undefined) {
+        // intentional == to catch null and undefined
+        if (value == null) {
             return true
         }
 
@@ -192,6 +193,15 @@ class Util {
     }
 
     /**
+     * Converts a snake_case string into camelCase.
+     * @param {String} value The snake_case string.
+     * @returns {String} The camelCase string.
+     */
+    static snakeToCamel(value) {
+        return value.replace(/(_\w)/g, m => m[1].toUpperCase());
+    }
+
+    /**
      * Converts any iterable (strings, numeric indices and a length property) into a true array
      * @param {Object|String} iterable
      * @param {Number} [start=0] start index
@@ -232,6 +242,7 @@ Neo.applyFromNs(Neo, Util, {
     isPromise        : 'isPromise',
     isRecord         : 'isRecord',
     isString         : 'isString',
+    snakeToCamel     : 'snakeToCamel',
     toArray          : 'toArray'
 }, true);
 

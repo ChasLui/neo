@@ -4,10 +4,19 @@ import {isDescriptor} from './core/ConfigSymbols.mjs';
 const
     camelRegex   = /-./g,
     configSymbol = Symbol.for('configSymbol'),
-    getSetCache  = Symbol('getSetCache'),
-    cloneMap = {
+    /**
+     * Keys that steer a property write onto the prototype chain instead of the object.
+     *
+     * `__proto__` is the setter; `constructor` and `prototype` are the two-hop route to the same
+     * place. A `JSON.parse`d payload carries `__proto__` as an OWN enumerable key, so any traversal
+     * that enumerates untrusted input has to refuse them explicitly — the object model will not.
+     * @type {Set<String>}
+     */
+    protoChainKeys = new Set(['__proto__', 'constructor', 'prototype']),
+    getSetCache    = Symbol('getSetCache'),
+    cloneMap       = {
         Array(obj, deep, ignoreNeoInstances) {
-            return !deep ? [...obj] : [...obj.map(val => Neo.clone(val, deep, ignoreNeoInstances))]
+            return !deep ? obj.slice() : obj.map(val => Neo.clone(val, deep, ignoreNeoInstances))
         },
         Date(obj) {
             return new Date(obj.valueOf())
@@ -25,21 +34,21 @@ const
             const out = {};
 
             // Use Reflect.ownKeys() to include symbol properties (e.g., for config descriptors)
-            Reflect.ownKeys(obj).forEach(key => {
+            for (const key of Reflect.ownKeys(obj)) {
                 const value = obj[key];
                 out[key] = !deep ? value : Neo.clone(value, deep, ignoreNeoInstances)
-            });
+            }
 
             return out
         }
     },
     typeDetector = {
-        function: item => {
+        function(item) {
             if (item.prototype?.constructor?.isClass) {
                 return 'NeoClass'
             }
         },
-        object: item => {
+        object(item) {
             if (item.constructor?.isClass && item instanceof Neo.core.Base) {
                 return 'NeoInstance'
             }
@@ -47,7 +56,23 @@ const
     };
 
 /**
- * The base module to enhance classes, create instances and the Neo namespace
+ * The base module to enhance classes, create instances and the Neo namespace.
+ *
+ * `Neo` deliberately exists as both an ES module export and the shared `globalThis.Neo`
+ * registry. The dual role is the class-system boundary that lets bundled production code,
+ * dynamically loaded ESM modules, workers, and unit-test entry points meet at one namespace.
+ * `setupClass()` is the gatekeeper for that registry: the first loaded class wins, later loads
+ * resolve to the existing namespace entry, and `unitTestMode` turns accidental duplicate loads
+ * into explicit failures. Do not split this registry or decompose `setupClass()` without first
+ * proving cold-start neutrality with `ai/scripts/benchmark/setupClass-cold-start.mjs`; it runs
+ * once per class during application boot, so helper extraction must account for wall time,
+ * allocation pressure, descriptor churn, and mixed-runtime namespace behavior.
+ *
+ * **Note:** The `Neo` namespace is explicitly augmented by core modules like `src/core/Util.mjs`
+ * and `src/core/Compare.mjs`. Global utility methods (e.g. `Neo.isArray`, `Neo.isEqual`) are defined
+ * there and mapped here. To ensure these methods are available, make sure to import the core package:
+ * `import * as core from '../src/core/_export.mjs';` or the specific modules.
+ *
  * @module Neo
  * @singleton
  * @borrows Neo.core.Util.bindMethods       as bindMethods
@@ -59,9 +84,15 @@ const
  * @borrows Neo.core.Util.isDefined         as isDefined
  * @borrows Neo.core.Compare.isEqual        as isEqual
  * @borrows Neo.core.Util.isNumber          as isNumber
- * @borrows Neo.core.Util.isObject          as isObject
+ * @borrows Neo.core.Util.isRecord          as isRecord
  * @borrows Neo.core.Util.isString          as isString
+ * @borrows Neo.core.Util.snakeToCamel      as snakeToCamel
  * @borrows Neo.core.Util.toArray           as toArray
+ * @borrows Neo.util.Logger.error           as error
+ * @borrows Neo.util.Logger.info            as info
+ * @borrows Neo.util.Logger.log             as log
+ * @borrows Neo.util.Logger.logError        as logError
+ * @borrows Neo.util.Logger.warn            as warn
  * @tutorial 01_Concept
  */
 let Neo = globalThis.Neo || {};
@@ -75,12 +106,19 @@ Neo = globalThis.Neo = Object.assign({
      */
     ntypeMap: {},
     /**
-     * Needed for Neo.create. False for the main thread, true for the App, Data & Vdom worker
+     * Needed for Neo.create. False for the main thread, true for the App, Data & VDom worker
      * @memberOf! module:Neo
      * @protected
      * @type Boolean
      */
     insideWorker: typeof DedicatedWorkerGlobalScope !== 'undefined' || typeof WorkerGlobalScope !== 'undefined',
+
+    /**
+     * A symbol to identify if a promise was rejected because the instance got destroyed.
+     * @memberOf! module:Neo
+     * @type {Symbol}
+     */
+    isDestroyed: Symbol.for('Neo.isDestroyed'),
 
     /**
      * Maps methods from one namespace to another one
@@ -104,10 +142,10 @@ Neo = globalThis.Neo = Object.assign({
         let fnName;
 
         if (target && Neo.typeOf(config) === 'Object') {
-            Object.entries(config).forEach(([key, value]) => {
-                fnName = namespace[value];
+            for (const key in config) {
+                fnName = namespace[config[key]];
                 target[key] = bind ? fnName.bind(namespace) : fnName
-            })
+            }
         }
 
         return target
@@ -138,11 +176,11 @@ Neo = globalThis.Neo = Object.assign({
      */
     assignDefaults(target, defaults) {
         if (target && Neo.typeOf(defaults) === 'Object') {
-            Object.entries(defaults).forEach(([key, value]) => {
+            for (const key in defaults) {
                 if (!Object.hasOwn(target, key)) {
-                    target[key] = value
+                    target[key] = defaults[key]
                 }
-            })
+            }
         }
 
         return target
@@ -184,6 +222,10 @@ Neo = globalThis.Neo = Object.assign({
      * @returns {String}
      */
     camel(value) {
+        if (!value.includes('-')) {
+            return value
+        }
+
         return value.replace(camelRegex, match => match[1].toUpperCase())
     },
 
@@ -284,6 +326,7 @@ Neo = globalThis.Neo = Object.assign({
 
         instance = new cls();
 
+        instance.assertFieldsShadowNoConfig();
         instance.construct(config);
         instance.onConstructed();
         instance.onAfterConstructed();
@@ -342,7 +385,7 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
                             const type = Neo.typeOf(value);
 
                             if (type === 'Array') {
-                                value = [...value]
+                                value = value.slice()
                             } else if (type === 'Object') {
                                 value = {...value}
                             }
@@ -350,7 +393,7 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
                     }
                     // legacy behavior
                     else if (Array.isArray(value)) {
-                        value = [...value]
+                        value = value.slice()
                     }
 
                     if (hasNewKey) {
@@ -507,7 +550,21 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
     },
 
     /**
-     * Deep-merges a source object into a target object
+     * Deep-merges a source object into a target object.
+     *
+     * **`__proto__`, `constructor` and `prototype` are skipped.** All three are silently dropped
+     * from `source`: they never appear as own properties of the returned target, and they never
+     * modify what the target inherits. The skip is unconditional — it does not depend on the
+     * value's type, on nesting depth, or on whether the key arrived as an own or inherited one —
+     * because a `JSON.parse`d payload carries `__proto__` as an OWN enumerable key and this method
+     * is part of the public default export, so its own boundary is the security boundary.
+     *
+     * A caller that legitimately needs to transport one of those three names must assign it
+     * directly rather than merge it; there is no opt-out, deliberately.
+     *
+     * Branch decisions use `Object.hasOwn(target, key)`, so an INHERITED property on the target is
+     * not mistaken for an existing branch to recurse into.
+     *
      * @memberOf module:Neo
      * @param {Object} target
      * @param {Object} source
@@ -524,16 +581,101 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
         }
 
         for (const key in source) {
+            // `for…in` enumerates inherited keys, and `JSON.parse` produces `__proto__` as an OWN
+            // enumerable one — so a parsed payload can steer this loop onto the prototype chain.
+            // Skipping the three chain keys is what keeps the write below on the caller's object.
+            //
+            // The guard lives HERE, in the primitive, because `Neo.merge` is part of the public
+            // default export: no census of repository callers can bound who calls it. It is not
+            // hypothetical even inside this repository — `ai/mcp/client/config.mjs` passes a
+            // `JSON.parse`d file chosen by an `mcp-cli --config` flag straight in, and
+            // `src/worker/Base.mjs` merges worker-message payloads into `Neo.config`.
+            if (protoChainKeys.has(key)) {
+                continue
+            }
+
             const value = source[key];
 
             if (Neo.typeOf(value) === 'Object') {
-                target[key] = Neo.merge(target[key] || {}, value)
+                // `Object.hasOwn`, not truthiness: an inherited property would otherwise read as an
+                // existing branch and this would recurse into shared state instead of a fresh node.
+                target[key] = Neo.merge(Object.hasOwn(target, key) ? target[key] : {}, value)
             } else {
                 target[key] = value
             }
         }
 
         return target
+    },
+
+    /**
+     * @param {Object} a
+     * @param {Object} b
+     * @returns {Object}
+     */
+    mergeDeepArrays(a, b) {
+        if (!a) return b;
+        if (!b) return a;
+
+        // If both are arrays, we need a smart merge strategy, not index-based merging
+        if (Array.isArray(a) && Array.isArray(b)) {
+            // Create a map of existing items for faster lookup if they have id/name
+            const
+                existingMap = new Map(),
+                mergedArray = Neo.clone(a, true, true); // Deep clone existing items
+
+            // Helper to generate a key for lookup
+            const getItemKey = (item) => {
+                if (item && typeof item === 'object') {
+                    return item.id ?? item.name ?? null
+                }
+                return null
+            };
+
+            mergedArray.forEach((item, index) => {
+                const key = getItemKey(item);
+                if (key !== null) existingMap.set(key, index)
+            });
+
+            b.forEach(newItem => {
+                const
+                    itemKey       = getItemKey(newItem),
+                    existingIndex = itemKey !== null ? existingMap.get(itemKey) : -1;
+
+                if (existingIndex !== undefined && existingIndex > -1) {
+                    // Match found by ID/Name - Deep merge
+                    mergedArray[existingIndex] = Neo.mergeDeepArrays(mergedArray[existingIndex], newItem)
+                } else {
+                    // Check for deep equality for items without ID/Name or primitives
+                    const exactMatchIndex = mergedArray.findIndex(existingItem => Neo.isEqual(existingItem, newItem));
+
+                    if (exactMatchIndex === -1) {
+                        mergedArray.push(Neo.clone(newItem, true, true))
+                    }
+                    // If exact match exists, we do nothing (it's a duplicate)
+                }
+            });
+
+            return mergedArray
+        }
+
+        let out = Neo.clone(a, true);
+
+        Object.entries(b).forEach(([key, value]) => {
+            if (out[key]) {
+                if (Array.isArray(out[key]) && Array.isArray(value)) {
+                    out[key] = Neo.mergeDeepArrays(out[key], value) // Recursively call for nested arrays
+                } else if (Neo.isObject(out[key]) && Neo.isObject(value)) {
+                    out[key] = Neo.mergeDeepArrays(out[key], value)
+                } else {
+                    out[key] = value
+                }
+            } else {
+                out[key] = value
+            }
+        });
+
+        return out
     },
 
     /**
@@ -556,6 +698,12 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
         } else if (strategy === 'deep') {
             if (defaultValueType === 'Object' && instanceValueType === 'Object') {
                 return Neo.merge(Neo.clone(defaultValue, true), instanceValue)
+            }
+        } else if (strategy === 'deepArrays') {
+            if (defaultValueType === 'Object' && instanceValueType === 'Object') {
+                return Neo.mergeDeepArrays(defaultValue, instanceValue)
+            } else if (defaultValueType === 'Array' && instanceValueType === 'Array') {
+                return Neo.mergeDeepArrays(defaultValue, instanceValue)
             }
         } else if (typeof strategy === 'function') {
             return strategy(defaultValue, instanceValue)
@@ -718,6 +866,22 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
          * Example: code.LivePreview running inside a dist/production app.
          */
         if (ns) {
+            // Exempt (return the already-registered value) ONLY when BOTH the incoming class and the
+            // existing registration are singletons — the documented "whichever registers first wins"
+            // arbitration (e.g. config.mjs + config.template.mjs, both 'Neo.ai.Config'). A non-singleton
+            // registers its class, a singleton its instance; a singleton colliding with a non-singleton on
+            // one namespace (in EITHER direction) is two distinct classes sharing a name — a genuine
+            // test-isolation leak — and must still fail loud.
+            if (Neo.config.unitTestMode) {
+                const existingClass       = ns.classConfigApplied ? ns : ns.constructor,
+                      incomingIsSingleton = proto.constructor.config.singleton === true,
+                      existingIsSingleton = existingClass?.config?.singleton === true;
+
+                if (!(incomingIsSingleton && existingIsSingleton)) {
+                    throw new Error('Namespace collision in unitTestMode for ' + proto.constructor.config.className)
+                }
+            }
+
             return ns
         }
 
@@ -764,7 +928,11 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
                 //    The 'value' property of the descriptor is then used as the actual config value.
                 if (Neo.isObject(value) && value[isDescriptor] === true) {
                     currentConfigDescriptors[baseKey] = Neo.clone(value, true); // Deep clone to prevent mutation
-                    value = value.value // Use the descriptor's value as the config value
+                    value = value.value; // Use the descriptor's value as the config value
+
+                    if (!isReactive) {
+                        cfg[key] = value
+                    }
                 }
 
                 // 2. Handle reactive vs. non-reactive configs: Generate getters/setters for reactive configs.
@@ -780,12 +948,14 @@ If you intended to create custom logic, use the 'beforeGet${Neo.capitalize(key)}
                 }
             });
 
-            // Merge configDescriptors: Apply "first-defined wins" strategy.
-            // If a descriptor for a key already exists (from a parent class), it is not overwritten.
+            // Merge configDescriptors: Apply "last-defined wins" strategy.
+            // If a descriptor for a key already exists (from a parent class), we merge the new one on top.
             if (Object.keys(currentConfigDescriptors).length > 0) {
                 for (const key in currentConfigDescriptors) {
                     if (!Object.hasOwn(configDescriptors, key)) {
                         configDescriptors[key] = currentConfigDescriptors[key];
+                    } else {
+                        Object.assign(configDescriptors[key], currentConfigDescriptors[key]);
                     }
                 }
             }
@@ -909,7 +1079,8 @@ const ignoreMixin = [
     'isClass',
     'mixin',
     'ntype',
-    'observable'
+    'observable',
+    'toJSON'
 ],
 
     charsRegex         = /\d+/g,
@@ -1076,5 +1247,27 @@ function parseArrayFromString(str) {
 Neo.config ??= {};
 
 Neo.assignDefaults(Neo.config, DefaultConfig);
+
+if (typeof globalThis.addEventListener === 'function') {
+    // Browsers and Workers
+    globalThis.addEventListener('unhandledrejection', e => {
+        if (e.reason === Neo.isDestroyed) {
+            e.preventDefault()
+        }
+    })
+} else if (typeof process !== 'undefined' && typeof process.emit === 'function') {
+    // Node.js
+    // We need to intercept the emit, since test runners like Playwright
+    // will listen to unhandledRejection and fail the test
+    const originalEmit = process.emit;
+
+    process.emit = function(name, data, ...args) {
+        if (name === 'unhandledRejection' && data === Neo.isDestroyed) {
+            return true
+        }
+
+        return originalEmit.apply(this, arguments)
+    }
+}
 
 export default Neo;

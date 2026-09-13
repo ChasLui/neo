@@ -1,5 +1,4 @@
 import CoreBase from '../core/Base.mjs';
-import NeoArray from '../util/Array.mjs';
 
 /**
  * @class Neo.manager.Focus
@@ -95,16 +94,18 @@ class Focus extends CoreBase {
             {history}        = me,
             newComponentPath = opts.componentPath,
             oldComponentPath = history[0].componentPath,
-            focusEnter       = NeoArray.difference(newComponentPath, oldComponentPath),
-            focusLeave       = NeoArray.difference(oldComponentPath, newComponentPath),
-            focusMove        = NeoArray.intersection(newComponentPath, oldComponentPath),
+            commonId         = me.getClosestCommonComponentId(oldComponentPath, newComponentPath),
+            oldCommonIndex   = oldComponentPath.indexOf(commonId),
+            newCommonIndex   = newComponentPath.indexOf(commonId),
+            focusLeave       = oldCommonIndex === -1 ? oldComponentPath : oldComponentPath.slice(0, oldCommonIndex),
+            focusEnter       = newCommonIndex === -1 ? newComponentPath : newComponentPath.slice(0, newCommonIndex),
             component, data;
 
         me.setComponentFocus({componentPath: focusLeave, data: opts.data}, false);
         me.setComponentFocus({componentPath: focusEnter, data: opts.data}, true);
 
-        focusMove.forEach(id => {
-            component = Neo.getComponent(id);
+        if (commonId) {
+            component = Neo.getComponent(commonId);
 
             if (component) {
                 data = {
@@ -119,9 +120,23 @@ class Focus extends CoreBase {
                 component.onFocusChange?.(data);
                 component.fire('focusChange', data)
             }
-        });
+        }
 
         me.addToHistory(opts)
+    }
+
+    /**
+     * Finds the nearest shared component between two upward component paths.
+     * Both paths are ordered from the focused component toward the root.
+     * @param {String[]} oldComponentPath Previous component path
+     * @param {String[]} newComponentPath New component path
+     * @returns {String|null} closest common component id
+     * @protected
+     */
+    getClosestCommonComponentId(oldComponentPath, newComponentPath) {
+        const oldIds = new Set(oldComponentPath);
+
+        return newComponentPath.find(id => oldIds.has(id)) || null
     }
 
     /**
@@ -149,12 +164,15 @@ class Focus extends CoreBase {
      * @protected
      */
     onFocusout(opts) {
-        let me = this;
+        let me   = this,
+            date = new Date();
 
-        me.lastFocusOutDate = new Date();
+        me.lastFocusOutDate = date;
 
         me.timeout(me.maxFocusInOutGap).then(() => {
-            if (me.lastFocusOutDate > me.lastFocusInDate) {
+            // Identity, not just recency: a newer focusout must not satisfy this check on an older
+            // one's behalf and deliver `opts` raised against a mount that has since been replaced.
+            if (me.lastFocusOutDate === date && date > me.lastFocusInDate) {
                 me.focusLeave(opts)
             }
         })

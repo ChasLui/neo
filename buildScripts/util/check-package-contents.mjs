@@ -1,0 +1,234 @@
+import {execFileSync}  from 'node:child_process';
+import path            from 'node:path';
+import process         from 'node:process';
+import {fileURLToPath} from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+const ROOT       = path.resolve(__dirname, '../..');
+
+/**
+ * @module buildScripts/util/check-package-contents
+ * @summary Asserts what the published tarball actually contains, because nothing else does.
+ *
+ * ## The defect class
+ *
+ * `package.json` declares no `files` array, so `.npmignore` is the sole gate on package contents —
+ * every line in it is load-bearing, and none of them is observed. Two live defects landed there and
+ * neither failed anything:
+ *
+ * - A rule pinned to a path and an extension (`apps/devindex/resources/*.json`) stopped matching
+ *   when the corpus moved into `data/` and grew a `.jsonl`. It became vacuous silently; 26.5 MiB
+ *   shipped to every consumer.
+ * - A negation under a bare directory exclusion (`.neo-ai-data` + `!.neo-ai-data/concepts/`) did not
+ *   widen that exclusion, it removed it — making server logs, wake-daemon state, and the Memory Core
+ *   SQLite graph packable on any machine where those files exist.
+ *
+ * The second is the reason this script exists rather than a careful re-reading of `.npmignore`. It
+ * produces a *correct-looking* package on a checkout whose `.neo-ai-data` happens to hold only the
+ * carved-out subtree, and a wrong one everywhere else. Inspecting one clean tarball confirms the
+ * wrong answer. Only packing a checkout that actually holds the files can falsify it — so the check
+ * has to run the real `npm pack`, and reasoning about ignore-file semantics is explicitly not a
+ * substitute. That reasoning is what produced both defects.
+ *
+ * ## What it does NOT do
+ *
+ * It does not audit `.npmignore` line by line, and it is not an allowlist of everything that may
+ * ship. It names the directories that must never ship, so that a future pattern which quietly stops
+ * matching fails here instead of in the registry.
+ */
+
+/**
+ * Directories that must not appear in the tarball, each with the exact subtrees deliberately
+ * carved out of it. A carve-out is spelled as a prefix so the intent stays readable next to the
+ * rule it mirrors — and so an ADDED sibling of a carve-out fails rather than inheriting its pass.
+ *
+ * **Directories only, and that is a boundary rather than an omission.** The `.npmignore` also
+ * excludes two individual generated FILES — `/apps/portal/sitemap.xml` and `/apps/portal/llms.txt`,
+ * 3.22 MiB of crawler-addressed SEO output — and they are deliberately absent here. The distinction
+ * is exposure vs bloat: every prefix below names a tree whose contents must never leave this
+ * machine (agent memories, the synced corpus, a crawler dataset), where a leak is a disclosure. The
+ * portal files are public artifacts already served from `neomjs.com`; shipping them wastes bytes and
+ * discloses nothing, so they are worth an ignore rule and not worth a gate.
+ *
+ * Raised by @neo-opus-grace on review — "the next reader will otherwise see an omission rather than
+ * a boundary", which was correct, because nothing here said so.
+ * @type {Array<{prefix: String, allow: String[], why: String}>}
+ */
+export const FORBIDDEN_PREFIXES = [
+    {
+        prefix: '.neo-ai-data/',
+        allow : ['.neo-ai-data/concepts/'],
+        why   : 'Agent OS plane state — server logs, wake-daemon files, deployment snapshots, and the Memory Core SQLite graph (agent memories, session records, A2A edges). The tracked concept ontology is the sole intended export.'
+    },
+    {
+        // Anchored on the tree, not on a path-plus-extension, and that is the whole point — it is
+        // the first defect in the module docblock arrived at. Pin a rule to `resources/content/
+        // *.md` and a corpus that grows a second extension or a nested directory walks straight out
+        // of the rule's reach while the rule still reads as if it covers it. A prefix has no such
+        // axis to slip on: a subtree that does not exist yet is excluded by default, and widening is
+        // a decision someone makes rather than one a rename makes for them.
+        //
+        // The `allow: []` is therefore deliberate rather than unfilled. Nothing under this tree is
+        // intended for the package, so there is no carve-out to keep honest.
+        prefix: 'resources/content/',
+        allow : [],
+        why   : 'The synced issue/PR/discussion corpus — agent substrate, not framework code.'
+    }
+];
+
+/**
+ * Files the tarball MUST contain. The mirror image of the rules above, and it exists because the
+ * two failures are not symmetric in how they announce themselves: a leak is discovered by anyone who
+ * unpacks the tarball, while a silent DROP is discovered by a consumer, at the point of use, with a
+ * module-not-found error naming a path nobody recognises.
+ *
+ * A `.npmignore` cannot express "keep exactly this file" without help, which is the second reason
+ * this list exists. An ignore rule on a directory is not reversible — a negation never re-includes a
+ * file whose parent directory is excluded — so `/dist/*` plus `!/dist/parse5.mjs` is the only shape
+ * that ships one file out of that tree, and it is one careless edit away from `/dist` again.
+ * @type {Array<{path: String, why: String}>}
+ */
+export const REQUIRED_ENTRIES = [
+    {
+        path: 'dist/marked.mjs',
+        why : 'Markdown and app content import this browser ESM parser by relative path; consumers do not install the engine devDependencies.'
+    },
+    {
+        path: 'dist/parse5.mjs',
+        why : 'src/functional/util/HtmlTemplateProcessor.mjs imports this bundle by relative path, and buildScripts/util/templateBuildProcessor.mjs imports it at module scope — so an installed engine needs it to RUN the dist/esm build, not merely to execute the tree that build emits. A consumer cannot rebuild it: parse5 and esbuild are both devDependencies.'
+    },
+    {
+        path: 'dist/mermaid.mjs',
+        why : 'main.addon.Mermaid imports this bundle by relative path, and a consumer cannot rebuild it: mermaid and esbuild are both devDependencies. It is also not interchangeable with the published package — the build substitutes the `define` identifier across mermaid\'s dependency graph, because vendored UMD wrappers inside it hand an ANONYMOUS factory to any global AMD loader, and main.addon.MonacoEditor installs one. Shipping the upstream file instead would fail to render every diagram on a page that also carries an editor. It is the largest required entry at ~3.3 MiB, which its producer prints on every build; main.addon.Mermaid sets useLazyLoading, so nothing fetches it until a page contains a diagram.'
+    }
+];
+
+/**
+ * @summary Pure predicate: which required entries are missing from the packed set?
+ *
+ * Split out from the pack invocation for the same reason as its counterpart below — the rule is
+ * testable by planting a path list, with no tarball on disk.
+ *
+ * @param {String[]} packedPaths Tarball-relative paths, as reported by `npm pack --json`.
+ * @param {Array<Object>} [rules=REQUIRED_ENTRIES] The presence rules to enforce.
+ * @returns {Array<{path: String, why: String}>} One entry per rule with no matching packed path.
+ */
+export function findMissingEntries(packedPaths, rules = REQUIRED_ENTRIES) {
+    const packed = new Set(packedPaths);
+
+    return rules.filter(rule => !packed.has(rule.path))
+}
+
+/**
+ * @summary Pure predicate: which packed paths violate the forbidden-prefix rules?
+ *
+ * Split out from the `npm pack` invocation so the rule logic is unit-testable without spawning a
+ * pack, and so a red-proof can plant a violating path directly instead of manufacturing one on disk.
+ *
+ * @param {String[]} packedPaths Tarball-relative paths, as reported by `npm pack --json`.
+ * @param {Array<Object>} [rules=FORBIDDEN_PREFIXES] The prefix rules to enforce.
+ * @returns {Array<{path: String, prefix: String, why: String}>} One entry per violating path.
+ */
+export function findForbiddenEntries(packedPaths, rules = FORBIDDEN_PREFIXES) {
+    const findings = [];
+
+    for (const packedPath of packedPaths) {
+        for (const rule of rules) {
+            if (!packedPath.startsWith(rule.prefix)) {
+                continue
+            }
+
+            if (rule.allow.some(allowed => packedPath.startsWith(allowed))) {
+                continue
+            }
+
+            findings.push({path: packedPath, prefix: rule.prefix, why: rule.why})
+        }
+    }
+
+    return findings
+}
+
+/**
+ * @summary Extracts the JSON payload from `npm pack --json` output.
+ *
+ * Lifecycle scripts write to stdout ahead of the payload, so the raw output is not parseable as-is.
+ * The payload is the FIRST top-level array — the first line that is exactly `[`. The doc previously
+ * said "last" while the code took the first; they now agree on the first, which is the correct one:
+ * `npm pack --json` emits exactly one array, and anything after it would be trailing noise that
+ * `JSON.parse` rejects anyway.
+ *
+ * **The leading newline is not required.** Matching only `'\n[\n'` meant a payload beginning at
+ * offset 0 — which is what happens the moment the `prepare` lifecycle stops writing to stdout —
+ * threw `no JSON array found` over output that had one. The direction of that failure was safe (a
+ * throw exits non-zero and reds the gate, so it could never false-PASS), but a guard that fails on
+ * a clean environment is a guard people learn to distrust. Raised by @neo-opus-grace on review.
+ *
+ * @param {String} raw Combined stdout of the pack invocation.
+ * @returns {Object[]} The parsed pack report.
+ * @throws {Error} When no JSON array is present.
+ */
+export function parsePackOutput(raw) {
+    const start = raw.startsWith('[\n') ? 0 : raw.indexOf('\n[\n');
+
+    if (start === -1) {
+        throw new Error('check-package-contents: no JSON array found in `npm pack --json` output')
+    }
+
+    return JSON.parse(raw.slice(start))
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const raw     = execFileSync('npm', ['pack', '--dry-run', '--json'], {cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024}),
+          report  = parsePackOutput(raw)[0],
+          files   = report.files.map(file => file.path),
+          found   = findForbiddenEntries(files),
+          missing = findMissingEntries(files);
+
+    if (missing.length) {
+        console.error(`\x1b[31mcheck-package-contents: ${missing.length} required entr(ies) missing from the npm tarball:\x1b[0m`);
+
+        for (const rule of missing) {
+            console.error(`\n  ${rule.path}`);
+            console.error(`    ${rule.why}`)
+        }
+
+        console.error(`
+Either an .npmignore rule stopped covering this file, or the release build did not produce it before
+packing. Check the pack first — 'npm pack --dry-run --json' is what ships, and the ignore patterns
+are only what someone believes ships.`);
+
+        process.exit(1)
+    }
+
+    if (found.length) {
+        console.error(`\x1b[31mcheck-package-contents: ${found.length} forbidden entr(ies) in the npm tarball:\x1b[0m`);
+
+        const byPrefix = new Map();
+
+        for (const finding of found) {
+            byPrefix.set(finding.prefix, byPrefix.get(finding.prefix) || {why: finding.why, paths: []});
+            byPrefix.get(finding.prefix).paths.push(finding.path)
+        }
+
+        for (const [prefix, group] of byPrefix) {
+            console.error(`\n  ${prefix} — ${group.paths.length} file(s)`);
+            console.error(`    ${group.why}`);
+            group.paths.slice(0, 10).forEach(entry => console.error(`      ${entry}`));
+
+            if (group.paths.length > 10) {
+                console.error(`      … and ${group.paths.length - 10} more`)
+            }
+        }
+
+        console.error(`
+An .npmignore rule that used to cover these has stopped covering them. Do not fix it by reading the
+patterns — that is what produced the defects this check exists for. Change the rule, re-run this
+check, and let the pack decide.`);
+
+        process.exit(1)
+    }
+
+    console.log(`check-package-contents: OK — ${report.entryCount} files, ${(report.size / 1048576).toFixed(2)} MiB tarball, ${(report.unpackedSize / 1048576).toFixed(2)} MiB unpacked; no forbidden entries, all ${REQUIRED_ENTRIES.length} required entr(ies) present.`)
+}

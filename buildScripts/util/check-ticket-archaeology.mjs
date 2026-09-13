@@ -1,0 +1,353 @@
+import {program}             from 'commander';
+import {execSync, spawnSync} from 'node:child_process';
+import {readFileSync}        from 'node:fs';
+import path                  from 'node:path';
+import process               from 'node:process';
+import {fileURLToPath}       from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+const scriptRoot = path.resolve(__dirname, '../..');
+
+// Scan roots for the default audit + `--base` CI mode: a directory (scanned recursively) or a specific
+// file. Keep mirror-aligned with the `paths:` trigger of .github/workflows/ticket-archaeology-lint.yml so
+// every path that can trigger the gate is also scanned (else it passes vacuously). The guard lists ITSELF
+// here so it self-guards at the merge-gate, not only via the pre-commit lint-staged `*.mjs` glob.
+export const DEFAULT_SCAN_PATHS = ['ai', 'src', 'test/playwright', 'buildScripts/util/check-ticket-archaeology.mjs'];
+export const DEFAULT_IGNORES    = ['.claude', '.codex', 'dist', 'node_modules'];
+
+// Inline relief valve for a genuinely load-bearing comment ref (judgment-call escape, not a blanket bypass).
+export const ESCAPE_MARKER = 'ticket-ref-ok';
+
+// The typed escape the published `neo-agent-skills` guard requires, accepted here IN ADDITION to
+// ESCAPE_MARKER so the two stop disagreeing on the same line. They say different things and both are
+// needed: the legacy bare marker asserts "this ref is deliberate", while the typed form asserts
+// "this is not a ref at all" — and a hex colour can only be described truthfully by the second.
+// Nothing is removed. Rejecting the bare form here would block at pre-commit every deliberate ref
+// that has no typed equivalent upstream, which is a policy question rather than a lint repair.
+//
+// Both patterns mirror the published guard rather than paraphrasing it, because the ONLY thing this
+// change buys is the two agreeing. The escape is scoped to the annotated colour token and requires a
+// colour context before it, so it cannot become a whole-line bypass: an unrelated ref sharing the
+// line stays visible, and a marker sitting in a string literal never reaches comment scope at all.
+export const CSS_COLOR_ESCAPE_PATTERN  = /#(?:\d{3}|\d{4}|\d{6}|\d{8})['"`]?\s*\[not-ticket-ref:\s*css-color\]/gi;
+export const CSS_COLOR_CONTEXT_PATTERN = /(?:\bCSS\s+color\b|\b(?:background(?:-?color)?|border(?:-?color)?|color|fill(?:style)?|stroke(?:style)?)_?\s*(?::|=)\s*['"`]?)\s*$/i;
+
+/**
+ * @summary Blanks the colour literals a typed escape annotates, leaving everything else scannable.
+ * @description Blanking rather than skipping the line is the whole correctness point: a line may
+ * carry an annotated colour AND a genuine ref, and only the first is excused.
+ * @param {String} comment
+ * @returns {String}
+ */
+export function withEscapedColorsRemoved(comment) {
+    let out = comment;
+
+    CSS_COLOR_ESCAPE_PATTERN.lastIndex = 0;
+
+    // Reversed, so an earlier replacement cannot shift a later match's index.
+    for (const match of [...comment.matchAll(CSS_COLOR_ESCAPE_PATTERN)].reverse()) {
+        if (CSS_COLOR_CONTEXT_PATTERN.test(comment.slice(Math.max(0, match.index - 48), match.index))) {
+            out = out.slice(0, match.index) + ' '.repeat(match[0].length) + out.slice(match.index + match[0].length)
+        }
+    }
+
+    return out
+}
+
+// Decay-prone tracking anchors that must not live in durable source comments. The named forms catch
+// the prose variants.
+//
+// `#\d{4,}\b` is a LENGTH heuristic standing in for a POSITION one, and it is wrong in both
+// directions. It cannot see a ref shorter than four digits — every `neo-agent-brain` /
+// `neo-agent-skills` ticket, post-split. And its trailing `\b` excludes only hex colours that
+// contain letters: `#1234ff` cannot reach a boundary, while an all-numeric six-digit colour
+// consumes every digit and matches — so a colour in a durable comment fires and needs an escape to
+// say so. Discriminating by position instead would free the bound, which is the parent ticket's
+// open question and is deliberately not attempted here.
+export const TICKET_PATTERNS = [
+    /#\d{4,}\b/,
+    /\bEpic\s+#?\d+\b/i,
+    /\bDiscussion\s+#?\d+\b/i,
+    /\bADR[-\s]?\d{3,4}\b/i
+];
+
+/**
+ * @summary Extracts the comment portion(s) of a single line of source via a small string-aware scan.
+ *
+ * Only true comment context is returned: line (slash-slash) and block (slash-star) comments. String
+ * literals are skipped, so a ticket ref that lives inside a string — a `describe(...)` test anchor or a
+ * URL such as the issues endpoint — is never mistaken for a durable comment. Block-comment state is
+ * carried across lines via `state.inBlock`; per-line string state is intentionally not carried (a ref
+ * buried in a multi-line template literal is the rare case the inline escape marker covers).
+ * @param {String} line
+ * @param {{inBlock: Boolean}} state Mutated in place as block comments open and close across lines.
+ * @returns {String} The comment text on this line (empty when the line carries no comment).
+ */
+export function extractComment(line, state) {
+    let comment = '',
+        i       = 0;
+
+    const n = line.length;
+
+    if (state.inBlock) {
+        const end = line.indexOf('*/');
+
+        if (end === -1) {
+            return line
+        }
+
+        comment      += line.slice(0, end) + ' ';
+        i             = end + 2;
+        state.inBlock = false
+    }
+
+    let inString = null;
+
+    while (i < n) {
+        const ch   = line[i],
+              next = line[i + 1];
+
+        if (inString) {
+            if (ch === '\\') {
+                i += 2;
+                continue
+            }
+            if (ch === inString) {
+                inString = null
+            }
+            i++;
+            continue
+        }
+
+        if (ch === '"' || ch === "'" || ch === '`') {
+            inString = ch;
+            i++;
+            continue
+        }
+
+        if (ch === '/' && next === '/') {
+            comment += ' ' + line.slice(i);
+            break
+        }
+
+        if (ch === '/' && next === '*') {
+            const end = line.indexOf('*/', i + 2);
+
+            if (end === -1) {
+                comment      += ' ' + line.slice(i + 2);
+                state.inBlock = true;
+                break
+            }
+
+            comment += ' ' + line.slice(i + 2, end);
+            i        = end + 2;
+            continue
+        }
+
+        i++
+    }
+
+    return comment
+}
+
+/**
+ * @summary Scans file content for decay-prone ticket refs that live in comment context.
+ * @param {String} content
+ * @returns {Object[]} `[{line, text}]` — one entry per offending line (1-based line numbers).
+ */
+export function findTicketRefs(content) {
+    const lines = content.split('\n'),
+          state = {inBlock: false},
+          hits  = [];
+
+    lines.forEach((line, index) => {
+        const comment = extractComment(line, state);
+
+        if (!comment || line.includes(ESCAPE_MARKER)) {
+            return
+        }
+
+        if (TICKET_PATTERNS.some(re => re.test(withEscapedColorsRemoved(comment)))) {
+            hits.push({line: index + 1, text: line.trim()})
+        }
+    });
+
+    return hits
+}
+
+/**
+ * @summary True when a repo-relative path is in archaeology-scan scope: a `.mjs` file under one of the
+ * scan roots (a directory prefix, or an exact-file root such as the guard itself) and not under any
+ * ignored path fragment. The single in-scope contract shared by the `--base` CI selection and the
+ * default audit — exported so the base-mode scope is unit-testable without a live git diff.
+ * @param {String} file Repo-relative path.
+ * @param {String[]} scanPaths Scan roots — directories (prefix match) or specific files (exact match).
+ * @param {String[]} ignores Path fragments; a file is excluded when any path segment matches one.
+ * @returns {Boolean}
+ */
+export function isInScopePath(file, scanPaths, ignores) {
+    return file.endsWith('.mjs')
+        && scanPaths.some(p => file === p || file.startsWith(`${p}/`))
+        && !ignores.some(ignore => file.split('/').includes(ignore))
+}
+
+/**
+ * @summary Phrases how many selected files were actually opened, never how many were selected.
+ *
+ * The two numbers diverge whenever a selected path fails to open: the failure warns on one line and is
+ * skipped, and reporting the SELECTED count as the scanned one turns that skip into a green claim about
+ * a file nobody read. Only the count of successful reads is entitled to the word.
+ *
+ * @param {Number} read     Files opened without error.
+ * @param {Number} selected Files the selection produced.
+ * @returns {String}
+ */
+export function describeRead(read, selected) {
+    const unreadable = selected - read,
+          base       = `${read} file(s) read`;
+
+    return unreadable > 0 ? `${base}, ${unreadable} unreadable` : base
+}
+
+function main() {
+    let gitRoot;
+    try {
+        gitRoot = execSync('git rev-parse --show-toplevel', {cwd: scriptRoot, encoding: 'utf-8'}).trim();
+    } catch (e) {
+        console.error('\x1b[31mError: Could not determine git repository root.\x1b[0m');
+        process.exit(1);
+    }
+
+    if (path.resolve(scriptRoot) !== path.resolve(gitRoot)) {
+        console.error('\x1b[31mError: Script repository root mismatch.\x1b[0m');
+        console.error(`check-ticket-archaeology.mjs is located under '${scriptRoot}', but the git repository root is '${gitRoot}'.`);
+        process.exit(1);
+    }
+
+    program
+        .name('check-ticket-archaeology')
+        .description('Substrate gate against decay-prone ticket/Epic/Discussion/ADR refs in durable .mjs comments/JSDoc.')
+        .argument('[files...]', 'Specific .mjs files to scan (lint-staged passes staged paths). Omitted -> --base changes or the --dirs audit.')
+        .option('-d, --dirs <list>', 'Comma-separated scan roots (directories or specific files) for default/--base mode.', DEFAULT_SCAN_PATHS.join(','))
+        .option('-i, --ignore <list>', 'Comma-separated path fragments to exclude.', DEFAULT_IGNORES.join(','))
+        .option('-b, --base <ref>', 'CI mode: scan only the in-scope .mjs changed vs this base ref.')
+        .option('-s, --skip', 'Skip the gate (generated-data class; also via NEO_SKIP_TICKET_ARCHAEOLOGY=1).', false)
+        .option('-q, --quiet', 'Suppress the per-violation listing; print the summary only.', false)
+        .showHelpAfterError();
+
+    program.parse(process.argv);
+
+    const argvFiles = program.args,
+          options   = program.opts(),
+          scanPaths = options.dirs.split(',').map(s => s.trim()).filter(Boolean),
+          ignores   = options.ignore.split(',').map(s => s.trim()).filter(Boolean);
+
+    // Targeted skip for the generated-data class (data-sync pipeline / GitHub Workflow sync): they commit
+    // resources/content/ which legitimately carries ticket-refs (the actual issue/PR/discussion bodies),
+    // so the archaeology gate does not apply. A clean opt-out, distinct from blunt `--no-verify`.
+    if (options.skip || process.env.NEO_SKIP_TICKET_ARCHAEOLOGY === '1') {
+        console.log('check-ticket-archaeology: skipped (generated-data class — --skip / NEO_SKIP_TICKET_ARCHAEOLOGY).');
+        process.exit(0);
+    }
+
+    function collectDefaultFiles() {
+        const findArgs = ['-type', 'f', '-name', '*.mjs'];
+        ignores.forEach(ignore => findArgs.push('-not', '-path', `*/${ignore}/*`));
+
+        const result = spawnSync('find', [...scanPaths, ...findArgs], {cwd: gitRoot, encoding: 'utf-8'});
+        if (result.status !== 0) {
+            console.error('\x1b[31mError: find command failed.\x1b[0m');
+            console.error(result.stderr);
+            process.exit(1);
+        }
+        return result.stdout.trim().split('\n').filter(Boolean);
+    }
+
+    // CI mode: the in-scope (per isInScopePath — .mjs, within a scan root, not ignored) files CHANGED vs
+    // the base ref. Deletions (--diff-filter=d excludes them) cannot carry archaeology; renames/edits exist
+    // on HEAD → readable.
+    function changedFilesVsBase(base) {
+        const result = spawnSync('git', ['diff', '--name-only', '--diff-filter=d', `${base}...HEAD`], {cwd: gitRoot, encoding: 'utf-8'});
+        if (result.status !== 0) {
+            console.error(`\x1b[31mError: git diff against '${base}' failed.\x1b[0m`);
+            console.error(result.stderr);
+            process.exit(1);
+        }
+        return result.stdout.trim().split('\n').filter(Boolean)
+            .filter(f => isInScopePath(f, scanPaths, ignores));
+    }
+
+    // File selection (all modes scan each selected file in FULL — boy-scout, no line scoping):
+    //   --base <ref> : CI — the in-scope files changed vs <ref>
+    //   file args    : pre-commit — lint-staged passes the staged paths
+    //   neither      : the default whole-repo audit
+    const hasFileArgs = argvFiles.length > 0;
+    const files       = options.base
+        ? changedFilesVsBase(options.base)
+        : hasFileArgs
+            ? argvFiles.filter(f => f.endsWith('.mjs'))
+            : collectDefaultFiles();
+
+    // Which of the three selections produced this file set, named in the receipt.
+    //
+    // The success line was a bare count, and the three modes select wildly different sets: a CI run
+    // reports the files a branch changed, a pre-commit run reports what was staged, a default run
+    // reports the whole audit scope. Quoted anywhere else all three read as "the repository is
+    // clean" — and the two narrow ones are the common cases. A count without its selection is a
+    // claim about whatever the reader had in mind.
+    const selection = options.base ? `changed vs ${options.base}`
+        : hasFileArgs             ? 'supplied paths'
+        : `full audit scope: ${scanPaths.join(', ')}`;
+
+    if (files.length === 0) {
+        console.log(`check-ticket-archaeology: 0 .mjs files in scope, nothing to check (${selection}).`);
+        process.exit(0);
+    }
+
+    // Counted, not assumed. `files.length` is what the SELECTION produced; a file that fails to open
+    // is warned about and skipped, and reporting the selected count as the scanned one turns that skip
+    // into a green claim about a file nobody read.
+    const violations = [];
+    let   read       = 0;
+
+    for (const file of files) {
+        let content;
+        try {
+            content = readFileSync(file, 'utf-8');
+        } catch (e) {
+            console.error(`check-ticket-archaeology: could not read ${file}: ${e.message}`);
+            continue;
+        }
+
+        read++;
+
+        // Boy-scout rule (operator-directed): scan the WHOLE touched file, exactly like
+        // check-block-alignment — touching a file obligates cleaning ALL its ticket-archaeology, not just
+        // the author's added lines. This reduces the grandfathered backlog as files are naturally touched;
+        // an added-lines-only scope (the prior shape) froze that debt instead.
+        findTicketRefs(content)
+            .forEach(({line, text}) => violations.push(`${file}:${line}: ${text}`));
+    }
+
+    if (violations.length > 0) {
+        console.error(`\x1b[31mcheck-ticket-archaeology: ${violations.length} decay-prone ref(s) (ticket/Epic/Discussion/ADR) in durable comments, across ${describeRead(read, files.length)} (${selection}):\x1b[0m`);
+        if (!options.quiet) {
+            violations.forEach(v => console.error('  ' + v));
+            console.error('\nDurable comments/JSDoc must describe behavior, not cite tracking refs — tickets, Epics, Discussions, or ADRs (they rot when the');
+            console.error('referenced item closes/renames). Move the ref to the PR body / commit subject, or — only if genuinely');
+            console.error(`load-bearing — add a "${ESCAPE_MARKER}: <reason>" marker on the line.`);
+            console.error('If the match is not a tracking ref at all — an all-numeric hex colour is the common case —');
+            console.error('use the typed form instead: "[not-ticket-ref: css-color]". It says what is true, and the');
+            console.error('published neo-agent-skills guard that runs in CI accepts it while rejecting the bare marker.');
+        }
+        process.exit(1);
+    }
+
+    console.log(`check-ticket-archaeology: ${describeRead(read, files.length)}, 0 violations (${selection}).`);
+}
+
+const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+if (invokedDirectly) {
+    main()
+}

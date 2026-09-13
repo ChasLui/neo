@@ -13,16 +13,24 @@ class Container extends Base {
          */
         className: 'Portal.view.about.Container',
         /**
-         * @member {String[]} cls=['portal-about-container']
+         * @member {String[]} cls=['portal-about-container', 'portal-shared-background']
          * @reactive
          */
-        cls: ['portal-about-container'],
+        cls: ['portal-about-container', 'portal-shared-background'],
         /**
          * @member {Object[]} items
          */
         items: [{
             tag : 'h1',
             text: 'Meet the Team'
+        }, {
+            cls : ['portal-about-story'],
+            tag : 'p',
+            html: [
+                'Neo.mjs started as a worker-first architecture experiment in 2015 and became public on GitHub in 2019. ',
+                'The origin and public-era heritage live in ',
+                '<a href="https://github.com/neomjs/neo/blob/dev/.github/STORY.md" target="_blank">the Neo.mjs story</a>.'
+            ].join('')
         }, {
             module         : MemberContainer,
             location       : 'Germany',

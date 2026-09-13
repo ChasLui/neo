@@ -2,7 +2,7 @@ import {buffer, debounce, intercept, resolveCallback, throttle} from '../util/Fu
 import Compare                                                  from '../core/Compare.mjs';
 import Util                                                     from '../core/Util.mjs';
 import Config                                                   from './Config.mjs';
-import {isDescriptor}                                           from './ConfigSymbols.mjs';
+import {isDescriptor, mergeFrom}                                from './ConfigSymbols.mjs';
 import IdGenerator                                              from './IdGenerator.mjs';
 import EffectManager                                            from './EffectManager.mjs';
 
@@ -13,6 +13,15 @@ const configSymbol       = Symbol.for('configSymbol'),
 /**
  * The base class for (almost) all classes inside the Neo namespace
  * Exceptions are e.g. core.IdGenerator, vdom.VNode
+ *
+ * `className` and `ntype` intentionally live on instances as well as on static class config.
+ * This costs a few prototype slots, but it keeps Chrome DevTools and Neural Link inspection
+ * direct: expanding an instance immediately reveals its framework identity and creation
+ * shortcut without walking the constructor or prototype chain. That ergonomics choice is part
+ * of the core debugging contract; do not demote these values to static-only metadata without
+ * measuring the runtime/debugging trade-off and updating every consumer that serializes,
+ * routes, or instantiates by class identity.
+ *
  * @class Neo.core.Base
  */
 class Base {
@@ -71,12 +80,28 @@ class Base {
      *     - `beforeSetMyConfig(newValue, oldValue)`: Executed before a new value is set. Can be used for validation or transformation. Returning `undefined` from this hook will cancel the update.
      *     - `afterSetMyConfig(newValue, oldValue)`: Executed after a new value has been successfully set. Ideal for triggering side effects.
      *
+     *     **The `undefined` Sentinel Value:**
+     *     In Neo.mjs, `undefined` is used as a strict, immutable sentinel value representing "initial instantiation".
+     *     When an `afterSet` hook runs for the very first time during component creation, its `oldValue` will ALWAYS be `undefined`.
+     *     This allows developers to easily skip logic that should not run during setup using a simple `if (oldValue !== undefined)`.
+     *     Because of this architecture, **you should never set a config to `undefined` later in its lifecycle.**
+     *     If you need to clear or reset a config's state, explicitly set it to `null`.
+     *
      * 2.  **Non-Reactive (Prototype-based) Configs:** Property names without a trailing underscore.
      *     These are applied directly to the class's **prototype** during the `Neo.setupClass`
      *     process. This is highly memory-efficient as the value is shared across all instances.
      *     It also allows for powerful, application-wide modifications of default behaviors
      *     by using the `Neo.overwrites` mechanism, which modifies these prototype values at
      *     load time.
+     *
+     *     **vs. Class Fields:**
+     *     Use a non-reactive config when you want the property to be eligible for the `Neo.overwrites`
+     *     mechanism. This allows external code (like themes or application-level overrides) to change
+     *     the default value for the class, which then propagates to all subclasses and instances
+     *     globally. Use standard class fields for internal state that should not be globally reconfigured.
+     *     A class extension never replaces a class field with a config, or a config with a field: a field
+     *     is an own data property, and a name it shares with a config anywhere in the prototype chain
+     *     shadows the config instead of overriding it. `Neo.create` refuses it right after `new`.
      *
      * @returns {Object} config
      */
@@ -130,8 +155,7 @@ class Base {
         /**
          * The config will get set to `true` once the Promise of `async initAsync()` is resolved.
          * You can use `afterSetIsReady()` to get notified once the ready state is reached.
-         * Since not all classes use the Observable mixin, Neo will not fire an event.
-         * method body.
+         * For observable classes, this will also fire a `ready` event.
          * @member {Boolean} isReady_=false
          * @reactive
          */
@@ -153,19 +177,29 @@ class Base {
          *
          * ONLY supported for singletons.
          *
-         * @member {Object|null} remote_=null
+         * @member {Object|null} remote_={[isDescriptor]: true, merge: 'deepArrays', value: null}
          * @protected
          * @reactive
          */
-        remote_: null
+        remote_: {
+            [isDescriptor]: true,
+            merge         : 'deepArrays',
+            value         : null
+        }
     }
 
+    /**
+     * Internal cache for all async reject functions (timeouts, remote calls, promises).
+     * @member {Map<Number|Object|Symbol, Function>} #asyncRejects=new Map()
+     * @private
+     */
+    #asyncRejects = new Map()
     /**
      * A private field to store the Config controller instances.
      * @member {Object} #configs={}
      * @private
      */
-    #configs = {};
+    #configs = {}
     /**
      * Internal cache for all config subscription cleanup functions.
      * @member {Function[]} #configSubscriptionCleanups=[]
@@ -173,11 +207,29 @@ class Base {
      */
     #configSubscriptionCleanups = []
     /**
-     * Internal cache for all timeout ids when using this.timeout()
-     * @member {Number[]} timeoutIds=[]
+     * A promise that resolves when the instance is fully initialized (after initAsync() completes).
+     * @member {Promise<void>|null} #readyPromise
      * @private
      */
-    #timeoutIds = []
+    #readyPromise = null
+    /**
+     * A resolver function for the ready promise.
+     * @member {Function|null} #readyResolver
+     * @private
+     */
+    #readyResolver = null
+    /**
+     * A promise that resolves when the remote methods are registered.
+     * @member {Promise<void>|null} #remotesReadyPromise
+     * @private
+     */
+    #remotesReadyPromise = null
+    /**
+     * A resolver function for the remotesReady promise.
+     * @member {Function|null} #remotesReadyResolver
+     * @private
+     */
+    #remotesReadyResolver = null
 
     /**
      * The main initializer for all Neo.mjs classes, invoked by `Neo.create()`.
@@ -230,7 +282,7 @@ class Base {
             }
         });
 
-        me.id = config.id || IdGenerator.getId(this.getIdKey());
+        me.id = config.id || me.constructor.config.id || IdGenerator.getId(this.getIdKey());
         delete config.id;
 
         // Assign class field values prior to configs
@@ -250,7 +302,16 @@ class Base {
          * So, we are intercepting the top-most `destroy()` call to check for the flag there.
          * Rationale: `destroy()` must only get called once.
          */
-        intercept(me, 'destroy', me.isDestroyedCheck, me);
+        intercept(me, 'destroy', me.#preDestroyHook, me);
+
+        // Storing a resolver to execute inside `afterSetIsReady`.
+        me.#readyPromise = new Promise(resolve => {
+            me.#readyResolver = resolve
+        });
+
+        me.#remotesReadyPromise = new Promise(resolve => {
+            me.#remotesReadyResolver = resolve
+        });
 
         // Triggers async logic after the construction chain is done.
         Promise.resolve().then(async () => {
@@ -286,6 +347,24 @@ class Base {
                 Neo.idMap ??= {};
                 Neo.idMap[value] = me
             }
+        }
+    }
+
+    /**
+     * Triggered after the isReady config gets changed.
+     * Resolves the ready() promise and fires the ready event for observable classes.
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetIsReady(value, oldValue) {
+        if (value) {
+            let me = this;
+
+            me.#readyResolver?.();
+
+            // We can only fire the event in case the Observable mixin is included.
+            me.getStaticConfig('observable') && me.fire('ready')
         }
     }
 
@@ -387,24 +466,6 @@ class Base {
     }
 
     /**
-     * Triggered before the remote config gets changed
-     * @param {Object|null} value
-     * @param {Object|null} oldValue
-     * @returns {Object|null}
-     * @protected
-     */
-    beforeSetRemote(value, oldValue) {
-        let me = this;
-
-        // Only allow remote access for singletons or main thread addons
-        if (value && !me.singleton && !me.isMainThreadAddon) {
-            throw new Error('Remote method access is only functional for Singleton classes ' + me.className)
-        }
-
-        return value
-    }
-
-    /**
      * @param {String} fn               The name of a function to find in the passed scope object.
      * @param {Object} originName       The name of the method inside the originScope.
      * @param {Object} scope            The scope to find the function in if it is specified as a string.
@@ -450,11 +511,15 @@ class Base {
     destroy() {
         let me = this;
 
-        me.isDestroying = true;
+        me.#asyncRejects.forEach((reject, id) => {
+            if (typeof id !== 'symbol') {
+                clearTimeout(id)
+            }
 
-        me.#timeoutIds.forEach(id => {
-            clearTimeout(id)
+            reject(Neo.isDestroyed)
         });
+
+        me.#asyncRejects.clear();
 
         me.#configSubscriptionCleanups.forEach(cleanup => {
             cleanup()
@@ -536,13 +601,24 @@ class Base {
      * Make sure to use the parent call `await super.initAsync()` at the beginning of their implementations,
      * or the registration of remote methods will get delayed.
      *
+     * **[WARNING] DO NOT AWAIT THIS METHOD EXTERNALLY**
+     * The `initAsync()` method is automatically triggered by the framework during `Neo.create()`.
+     * Calling it externally (e.g. `await myInstance.initAsync()`) will execute it twice, leading to fatal duplication bugs.
+     * If you need to wait for a class to finish initializing, **always** use `await myInstance.ready()` instead.
+     *
      * A common use case is requiring conditional or optional dynamic imports or fetching initial data.
      *
      * Once the promise returned by this method is fulfilled, the `isReady` config will be set to `true`.
      * @returns {Promise<void>} A promise that resolves when the asynchronous initialization is complete.
      */
     async initAsync() {
-        this.remote && this.initRemote()
+        let me = this;
+
+        if (me.remote) {
+            await me.initRemote()
+        }
+
+        me.#remotesReadyResolver()
     }
 
     /**
@@ -566,27 +642,79 @@ class Base {
      * Remote method access via promises
      * @protected
      */
-    initRemote() {
-        let {className, remote} = this,
+    async initRemote() {
+        let me                  = this,
+            {className, remote} = me,
             {currentWorker}     = Neo;
 
-        if (!Neo.config.unitTestMode) {
-            if (Neo.workerId !== 'main' && currentWorker.isSharedWorker && !currentWorker.isConnected) {
-                currentWorker.on('connected', () => {
-                    Base.sendRemotes(className, remote)
-                }, this, {once: true})
+        if (!Neo.config.isMiddleware && !Neo.config.unitTestMode) {
+            // SetupClass applies `singleton` to the instance prototype if configured.
+            // Main thread addons are also treated as singletons for remote method access.
+            if (me.singleton === true || me.isMainThreadAddon === true) {
+                // Singleton Routing (Namespace-Driven)
+                if (Neo.workerId !== 'main' && currentWorker.isSharedWorker) {
+                    if (remote.main) {
+                        currentWorker.remotesToRegister.push({className, methods: remote.main})
+                    }
+
+                    if (!currentWorker.isConnected) {
+                        await new Promise(resolve => {
+                            currentWorker.on('connected', () => resolve(), me, {once: true})
+                        })
+                    }
+                } else if (Neo.workerId === 'service') {
+                    if (remote.app) {
+                        currentWorker.remotesToRegister.push({className, methods: remote.app})
+                    }
+                }
+
+                await Base.promiseRemotes(className, remote)
             } else {
-                Base.sendRemotes(className, remote)
+                // Instance-to-Instance Routing (ID-Driven)
+                // Unlike Singletons which broadcast their existence globally via 'registerRemote',
+                // instances dynamically build a `me.remote` object containing pre-bound proxy functions.
+                // This establishes a localized IPC channel for cross-thread architecture (e.g. data.Pipeline).
+                let remoteObj = {};
+
+                Object.entries(remote).forEach(([worker, methods]) => {
+                    remoteObj[worker] = {};
+
+                    methods.forEach(method => {
+                        remoteObj[worker][method] = (data, buffer) => {
+                            let origin = Neo.workerId === 'main' ? Neo.worker.Manager : Neo.currentWorker,
+                                opts   = {
+                                    action         : 'remoteMethod',
+                                    data,
+                                    destination    : worker,
+                                    remoteClassName: className,
+                                    remoteMethod   : method
+                                };
+
+                            // The destination ID is resolved at execution time. This accommodates
+                            // the "Handshake" pattern where `me.remoteId` is populated asynchronously
+                            // after the target instance is created in the remote thread.
+                            if (me.remoteId) {
+                                opts.remoteId = me.remoteId
+                            } else if (data?.remoteId) {
+                                opts.remoteId = data.remoteId
+                            }
+
+                            if (worker === 'main' && data?.windowId) {
+                                opts.destination = data.windowId
+                            }
+
+                            if (origin.isSharedWorker) {
+                                origin.assignPort(data, opts)
+                            }
+
+                            return origin.promiseMessage(opts.destination, opts, buffer)
+                        }
+                    })
+                });
+
+                me.remote = remoteObj
             }
         }
-    }
-
-    /**
-     * Intercepts destroy() calls to ensure they will only get called once
-     * @returns {Boolean}
-     */
-    isDestroyedCheck() {
-        return !this.isDestroyed
     }
 
     /**
@@ -725,35 +853,75 @@ class Base {
 
         if (items) {
             if (!Array.isArray(items)) {
+                if (Neo.isObject(items)) {
+                    Object.keys(items).forEach(key => {
+                        let item = items[key];
+
+                        if (item) {
+                            if (item[mergeFrom]) {
+                                if (me[item[mergeFrom]]) {
+                                    items[key] = Neo.mergeConfig(me[item[mergeFrom]], item, 'deep');
+                                    item = items[key];
+                                    delete item[mergeFrom]
+                                }
+                            }
+
+                            me.parseItemConfigs([item])
+                        }
+                    });
+                    return
+                }
                 items = [items]
             }
 
-            items.forEach(item => {
-                item && Object.entries(item).forEach(([key, value]) => {
-                    if (Array.isArray(value)) {
-                        me.parseItemConfigs(value);
-                    } else if (typeof value === 'string' && value.startsWith('@config:')) {
-                        nsArray = value.substring(8).trim().split('.');
-                        nsKey   = nsArray.pop();
-                        ns      = Neo.ns(nsArray, false, me);
-
-                        if (ns[nsKey] === undefined) {
-                            console.error('The used @config does not exist:', nsKey, nsArray.join('.'))
-                        } else {
-                            symbolNs = Neo.ns(nsArray, false, me[configSymbol]);
-
-                            // The config might not be processed yet, especially for configs
-                            // not ending with an underscore, so we need to check the configSymbol first.
-                            if (symbolNs && Object.hasOwn(symbolNs, nsKey)) {
-                                item[key] = symbolNs[nsKey]
-                            } else {
-                                item[key] = ns[nsKey]
-                            }
+            items.forEach((item, index) => {
+                if (item) {
+                    if (item[mergeFrom]) {
+                        if (me[item[mergeFrom]]) {
+                            items[index] = Neo.mergeConfig(me[item[mergeFrom]], item, 'deep');
+                            item = items[index];
+                            delete item[mergeFrom]
                         }
                     }
-                })
+
+                    Object.entries(item).forEach(([key, value]) => {
+                        if (Array.isArray(value)) {
+                            me.parseItemConfigs(value);
+                        } else if (Neo.isObject(value) && key === 'items') {
+                            me.parseItemConfigs(value)
+                        } else if (typeof value === 'string' && value.startsWith('@config:')) {
+                            nsArray = value.substring(8).trim().split('.');
+                            nsKey   = nsArray.pop();
+                            ns      = Neo.ns(nsArray, false, me);
+
+                            if (ns[nsKey] === undefined) {
+                                console.error('The used @config does not exist:', nsKey, nsArray.join('.'))
+                            } else {
+                                symbolNs = Neo.ns(nsArray, false, me[configSymbol]);
+
+                                // The config might not be processed yet, especially for configs
+                                // not ending with an underscore, so we need to check the configSymbol first.
+                                if (symbolNs && Object.hasOwn(symbolNs, nsKey)) {
+                                    item[key] = symbolNs[nsKey]
+                                } else {
+                                    item[key] = ns[nsKey]
+                                }
+                            }
+                        }
+                    })
+                }
             })
         }
+    }
+
+    /**
+     * Intercepts destroy() calls to ensure they will only get called once
+     * @returns {Boolean}
+     * @private
+     */
+    #preDestroyHook() {
+        this.isDestroying = true;
+        return !this.isDestroyed
     }
 
     /**
@@ -785,6 +953,29 @@ class Base {
     }
 
     /**
+     * Returns a promise that resolves when the instance is fully initialized (after initAsync).
+     * Use case: alternative way to subscribe to the ready state, especially for classes which are not observable.
+     *
+     * **[CRITICAL]** This is the correct, architecture-compliant way to wait for an instance to spin up externally.
+     * Never call `initAsync()` externally!
+     *
+     * @example await ChromaManager.ready();
+     * @example await orchestrator.ready();
+     * @returns {Promise<void>}
+     */
+    ready() {
+        return this.#readyPromise
+    }
+
+    /**
+     * Returns a promise that resolves when the remote methods are registered.
+     * @returns {Promise<void>}
+     */
+    remotesReady() {
+        return this.#remotesReadyPromise
+    }
+
+    /**
      * Sends remote method registration messages to other threads (workers or main-threads).
      * This method is crucial for enabling cross-worker communication and remote method invocation
      * for singleton instances. It ensures that methods defined in the `remote` config
@@ -794,15 +985,74 @@ class Base {
      * @protected
      * @static
      */
-    static sendRemotes(className, remote) {
-        let origin;
+    static async promiseRemotes(className, remote) {
+        let origin, promises = [];
 
         Object.entries(remote).forEach(([worker, methods]) => {
             if (Neo.workerId !== worker) {
                 origin = Neo.workerId === 'main' ? Neo.worker.Manager : Neo.currentWorker;
-                origin.sendMessage(worker, {action: 'registerRemote', className, methods})
+
+                if (origin.hasWorker(worker)) {
+                    promises.push(origin.promiseMessage(worker, {action: 'registerRemote', className, methods}))
+                }
             }
-        })
+        });
+
+        await Promise.all(promises)
+    }
+
+    /**
+     * Serializes a config object/array to be JSON-compatible.
+     * Use this method when a config might contain references to Neo classes (constructors)
+     * which need to be converted to their className strings for serialization.
+     * @param {Array|Object} config
+     * @returns {Array|Object}
+     */
+    serializeConfig(config) {
+        let me   = this,
+            type = Neo.typeOf(config);
+
+        if (type === 'Array') {
+            return config.map(item => me.serializeConfig(item))
+        }
+
+        if (type === 'NeoInstance') {
+            return {
+                className: config.className,
+                id       : config.id
+            }
+        }
+
+        if (type !== 'Object') {
+            return type === 'NeoClass' ? config.prototype.className : config
+        }
+
+        let out = {};
+
+        Object.entries(config).forEach(([key, value]) => {
+            type = Neo.typeOf(value);
+
+            if (type === 'NeoClass') {
+                if (key === 'module') {
+                    out.className = value.prototype.className
+                } else {
+                    out[key] = value.prototype.className
+                }
+            } else if (type === 'NeoInstance') {
+                out[key] = {
+                    className: value.className,
+                    id       : value.id
+                }
+            } else if (type === 'Object' || type === 'Array') {
+                out[key] = me.serializeConfig(value)
+            } else if (type !== 'Function') {
+                out[key] = value
+            } else {
+                out[key] = '[Function]'
+            }
+        });
+
+        return out
     }
 
     /**
@@ -855,11 +1105,49 @@ class Base {
             })
 
             // Process reactive configs
-            me.processConfigs(true);
+            me.processConfigs(true)
         } finally {
             // Trigger the skipped Effect, if needed
             EffectManager.resume()
         }
+    }
+
+    /**
+     * @summary Refuses the collision behind the rule that a class extension never replaces a class
+     * field with a config, or a config with a field. `Neo.create` calls this right after `new`, when
+     * the instance owns exactly its class fields and no `construct()` has run: an own data property
+     * whose key is a config of the class shadows that config for the instance's lifetime — a plain
+     * config's value never applies, a reactive config's `beforeSet` / `afterSet` never run. Own
+     * accessors are ordinary overrides and pass, and a `construct()` that assigns a plain config before
+     * `super.construct()` runs after this check and passes too. `Neo.createConfig` refuses the setter
+     * flavour of the same rule at setup time; fields exist only after `new`.
+     * @throws {Error} Naming the field, the instance class and, for a reactive config, the class whose accessor it shadows.
+     * @protected
+     */
+    assertFieldsShadowNoConfig() {
+        const me = this, cls = me.constructor;
+
+        Object.getOwnPropertyNames(me).forEach(key => {
+            if (!Object.hasOwn(cls.config, key) || !('value' in Object.getOwnPropertyDescriptor(me, key))) return;
+
+            let proto = Object.getPrototypeOf(me);
+
+            while (proto && typeof Object.getOwnPropertyDescriptor(proto, key)?.set !== 'function') {
+                proto = Object.getPrototypeOf(proto)
+            }
+
+            const owner = proto && (proto.constructor.config?.className ?? proto.constructor.name),
+                  uKey  = key[0].toUpperCase() + key.slice(1),
+                  what  = owner
+                      ? `the reactive config '${key}_' declared by ${owner}: the config's accessor never runs and afterSet${uKey}() never fires`
+                      : `the config '${key}': its value in static config never applies`;
+
+            throw new Error(
+`Invalid class field '${key}' in ${cls.config.className}: it shadows ${what}.
+A class extension never replaces a class field with a config, or a config with a field.
+Give the config its default with a plain '${key}' entry in static config, or rename one of them.`
+            )
+        })
     }
 
     /**
@@ -900,22 +1188,173 @@ class Base {
     }
 
     /**
-     * Stores timeoutIds internally, so that destroy() can clear them if needed
-     * @param {Number} time in milliseconds
-     * @returns {Promise<any>}
+     * @summary Waits for a delay owned by this instance, optionally cancellable by its caller.
+     * Abort rejects with the signal's reason; destruction rejects with Neo.isDestroyed.
+     * Every terminal removes the abort listener and async registration. A pre-aborted signal
+     * creates no timer. Omitting the signal retains the ordinary timeout contract.
+     * @param {Number} time Delay in milliseconds
+     * @param {Object} [options={}]
+     * @param {AbortSignal} [options.signal] Cancels this wait while leaving its owner alive
+     * @returns {Promise<void>}
      */
-    timeout(time) {
-        return new Promise(resolve => {
-            let timeoutIds = this.#timeoutIds,
-                timeoutId  = setTimeout(() => {timeoutIds.splice(timeoutIds.indexOf(timeoutId), 1); resolve()}, time);
+    timeout(time, {signal}={}) {
+        let me = this;
 
-            timeoutIds.push(timeoutId)
+        return new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+                reject(signal.reason);
+                return
+            }
+
+            const cleanup = () => {
+                me.unregisterAsync(id);
+                signal?.removeEventListener('abort', onAbort)
+            }, fail = reason => {
+                cleanup();
+                reject(reason)
+            }, onAbort = () => {
+                clearTimeout(id);
+                fail(signal.reason)
+            }, id = setTimeout(() => {
+                cleanup();
+                resolve()
+            }, time);
+
+            me.registerAsync(id, fail);
+            signal?.addEventListener('abort', onAbort, {once: true})
         })
     }
 
     /**
+     * @summary Waits for a synchronous predicate using this instance's cancellable timeouts.
+     * Samples immediately and once more after the retry budget is exhausted. Predicate errors
+     * propagate; destruction during a pending timeout rejects with `Neo.isDestroyed`.
+     * @param {Function} predicate Synchronous readiness check
+     * @param {Object} [options={}]
+     * @param {Number} [options.attempts=120] Maximum number of waits
+     * @param {Number} [options.delay=16] Delay between samples in milliseconds
+     * @returns {Promise<Boolean>}
+     */
+    async waitFor(predicate, {attempts=120, delay=16}={}) {
+        let me = this;
+
+        for (let attempt = 0; attempt <= attempts && !me.isDestroyed; attempt++) {
+            if (predicate()) return true;
+
+            attempt < attempts && await me.timeout(delay)
+        }
+
+        return Boolean(predicate())
+    }
+
+    /**
+     * Wraps a promise to ensure it rejects if the component is destroyed before completion.
+     * @param {Promise} promise - The promise to wrap.
+     * @returns {Promise}
+     */
+    trap(promise) {
+        let me = this;
+
+        return new Promise((resolve, reject) => {
+            const id = Symbol();
+
+            me.registerAsync(id, reject);
+
+            promise.then(val => {
+                me.unregisterAsync(id);
+                resolve(val)
+            }).catch(err => {
+                me.unregisterAsync(id);
+                reject(err)
+            })
+        })
+    }
+
+    /**
+     * Unregisters an async operation.
+     * @param {Number|Object|Symbol} id - The unique ID for the async operation.
+     */
+    unregisterAsync(id) {
+        this.#asyncRejects.delete(id)
+    }
+
+    /**
+     * Registers an async operation (via its reject function) to be cancelled (rejected)
+     * when the component is destroyed.
+     * @param {Number|Object|Symbol} id - The unique ID for the async operation.
+     * @param {Function} reject - The reject function of the promise.
+     */
+    registerAsync(id, reject) {
+        this.#asyncRejects.set(id, reject)
+    }
+
+    /**
+     * Recursive helper to extract all mixin classes from the mixins object
+     * @param {Object} [obj=this.mixins]
+     * @param {Array} [res=[]]
+     * @returns {Array}
+     * @protected
+     */
+    getMixins(obj=this.mixins, res=[]) {
+        if (obj) {
+            Object.values(obj).forEach(value => {
+                if (value && value.prototype) {
+                    res.push(value)
+                } else if (Neo.isObject(value)) {
+                    this.getMixins(value, res)
+                }
+            })
+        }
+
+        return res
+    }
+
+    /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * Subclasses should override this to include their specific relevant state.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        // Recursion guard: If a mixin calls super.toJSON(), it hits this method again.
+        // We return the base object to break the loop.
+        if (me.__inToJSON) {
+            return {
+                className  : me.className,
+                id         : me.id,
+                isDestroyed: me.isDestroyed,
+                ntype      : me.ntype,
+                remote     : me.remote
+            }
+        }
+
+        me.__inToJSON = true;
+
+        try {
+            let out = {
+                className  : me.className,
+                id         : me.id,
+                isDestroyed: me.isDestroyed,
+                ntype      : me.ntype,
+                remote     : me.remote
+            };
+
+            me.getMixins().forEach(mixin => {
+                if (mixin.prototype.toJSON) {
+                    Object.assign(out, mixin.prototype.toJSON.call(me))
+                }
+            });
+
+            return out
+        } finally {
+            delete me.__inToJSON
+        }
+    }
+
+    /**
      * <p>Enhancing the toString() method, e.g.</p>
-     * `Neo.create('Neo.button.Base').toString() => "[object Neo.button.Base (neo-button-1)]"`
+     * `Neo.create('Neo.button.Base').toString() => "[object Neo.button.Base]"`
      * @returns {String}
      */
     get [Symbol.toStringTag]() {

@@ -471,7 +471,8 @@ class Component extends BaseComponent {
                 appName  : me.appName,
                 direction: 'left',
                 id       : scrollContainerId,
-                value    : rect.width * me.columnsBuffer / me.columnsVisible / 3
+                value    : rect.width * me.columnsBuffer / me.columnsVisible / 3,
+                windowId : me.windowId
             })
         }
     }
@@ -730,8 +731,8 @@ class Component extends BaseComponent {
     onFocusChange(data) {
         let {oldPath, path} = data;
 
-        oldPath?.[0]?.cls.includes('neo-event') && Neo.applyDeltas(this.appName, {id: oldPath[0].id, cls: {remove: ['neo-focus']}});
-        path   ?.[0]?.cls.includes('neo-event') && Neo.applyDeltas(this.appName, {id: path[0]   .id, cls: {add:    ['neo-focus']}})
+        oldPath?.[0]?.cls.includes('neo-event') && Neo.applyDeltas(this.windowId, {id: oldPath[0].id, cls: {remove: ['neo-focus']}});
+        path   ?.[0]?.cls.includes('neo-event') && Neo.applyDeltas(this.windowId, {id: path[0]   .id, cls: {add:    ['neo-focus']}})
     }
 
     /**
@@ -819,7 +820,8 @@ class Component extends BaseComponent {
                     Neo.main.DomAccess.scrollBy({
                         direction: 'left',
                         id       : me.getScrollContainer().id,
-                        value    : scrollValue
+                        value    : scrollValue,
+                        windowId : me.windowId
                     }).then(() => {
                         me.isUpdating = false
                     })

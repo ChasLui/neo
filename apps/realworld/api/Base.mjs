@@ -55,17 +55,18 @@ class Base extends CoreBase {
      * => Neo.apps['RealWorld'] does most likely not exist yet.
      */
     afterConstructed() {
-        let me = this;
+        let me  = this,
+            app = Neo.appsByName?.['RealWorld']?.[0];
 
-        if (!Neo.apps || !Neo.apps['RealWorld']) {
+        if (!app) {
             me.timeout(100).then(() => {
                 me.afterConstructed()
             })
         } else {
-            if (Neo.apps['RealWorld'].vnodeInitialized) {
+            if (app.vnodeInitialized) {
                 me.onAppRendered()
             } else {
-                Neo.apps['RealWorld'].on('vnodeInitialized',me.onAppRendered, me)
+                app.on('vnodeInitialized',me.onAppRendered, me)
             }
         }
     }
@@ -92,13 +93,13 @@ class Base extends CoreBase {
 
                 me.onReady(token);
                 Base.isReady = true;
-                Base.fire('ready', token);
-            });
+                Base.fire('ready', token)
+            })
         } else {
             Base.on({
                 ready: me.onReady,
                 scope: me
-            });
+            })
         }
     }
 
@@ -116,7 +117,7 @@ class Base extends CoreBase {
             return API_URL + opts.url;
         }
 
-        return API_URL + (opts.resource || this.resource) + (opts.slug ? '/' + opts.slug : '');
+        return API_URL + (opts.resource || this.resource) + (opts.slug ? '/' + opts.slug : '')
     }
 
     /**
@@ -142,8 +143,8 @@ class Base extends CoreBase {
                 'X-Requested-With': 'XMLHttpRequest'
             }
         }).catch(error => {
-            console.log('RealWorld.api.Base:get()', error);
-        });
+            console.log('RealWorld.api.Base:get()', error)
+        })
     }
 
     /**
@@ -169,8 +170,8 @@ class Base extends CoreBase {
                 'X-Requested-With': 'XMLHttpRequest'
             }
         }).catch(error => {
-            console.log('RealWorld.api.Base:get()', error);
-        });
+            console.log('RealWorld.api.Base:get()', error)
+        })
     }
 
     /**
@@ -186,7 +187,7 @@ class Base extends CoreBase {
         }
 
         me.isReady = true;
-        me.fire('ready', token);
+        me.fire('ready', token)
     }
 
     /**
@@ -198,8 +199,6 @@ class Base extends CoreBase {
      * @returns {Promise<any>}
      */
     post(opts={}) {
-        // console.log('post', opts);
-
         const params = opts.params;
         delete opts.params;
 
@@ -216,7 +215,7 @@ class Base extends CoreBase {
             }
         }).catch(error => {
             console.log('RealWorld.api.Base:post()', error);
-        });
+        })
     }
 
     /**
@@ -245,8 +244,8 @@ class Base extends CoreBase {
                 'X-Requested-With': 'XMLHttpRequest'
             }
         }).catch(error => {
-            console.log('RealWorld.api.Base:put()', error);
-        });
+            console.log('RealWorld.api.Base:put()', error)
+        })
     }
 }
 

@@ -151,8 +151,8 @@ class Flexbox extends Base {
         let style = item.wrapperStyle,
             flex  = style.flex || item.flex || (this.align === 'stretch' ? 1 : '0 1 auto');
 
-        if (flex === 1) {
-            flex = '1 1 auto'
+        if (Neo.isNumber(flex)) {
+            flex = `${flex} 1 0%`
         }
 
         style.flex = flex;
@@ -281,6 +281,24 @@ class Flexbox extends Base {
         }
 
         return value;
+    }
+
+    /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            align    : me.align,
+            direction: me.direction,
+            gap      : me.gap,
+            pack     : me.pack,
+            prefix   : me.prefix,
+            wrap     : me.wrap
+        }
     }
 
     /**

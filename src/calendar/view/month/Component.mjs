@@ -330,7 +330,8 @@ class Component extends BaseComponent {
                     Neo.main.DomAccess.scrollTo({
                         direction: 'top',
                         id       : me.vdom.cn[1].id,
-                        value    : data[0].height - data[1].height
+                        value    : data[0].height - data[1].height,
+                        windowId : me.windowId
                     })
                 })
             })
@@ -625,15 +626,15 @@ class Component extends BaseComponent {
      * @param {Object[]} data.path
      */
     onFocusChange(data) {
-        let {appName}       = this,
+        let {windowId}      = this,
             {oldPath, path} = data;
 
         if (oldPath?.[0]?.cls.includes('neo-event')) {
-            Neo.applyDeltas(appName, {id: oldPath[0].id, cls: {remove: ['neo-focus']}})
+            Neo.applyDeltas(windowId, {id: oldPath[0].id, cls: {remove: ['neo-focus']}})
         }
 
         if (path?.[0]?.cls.includes('neo-event')) {
-            Neo.applyDeltas(appName, {id: path[0].id, cls: {add: ['neo-focus']}})
+            Neo.applyDeltas(windowId, {id: path[0].id, cls: {add: ['neo-focus']}})
         }
     }
 
@@ -704,7 +705,8 @@ class Component extends BaseComponent {
                     Neo.main.DomAccess.scrollTo({
                         direction: 'top',
                         id       : me.vdom.cn[1].id,
-                        value    : data.clientHeight - me.headerHeight
+                        value    : data.clientHeight - me.headerHeight,
+                        windowId : me.windowId
                     })
                 })
             }

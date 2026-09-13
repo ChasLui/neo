@@ -1,5 +1,6 @@
 import Base             from '../core/Base.mjs';
 import DomAccess        from './DomAccess.mjs';
+import Observable       from '../core/Observable.mjs';
 import {voidAttributes} from '../vdom/domConstants.mjs';
 
 const NeoConfig = Neo.config;
@@ -17,6 +18,13 @@ const NeoConfig = Neo.config;
  * @singleton
  */
 class DeltaUpdates extends Base {
+    /**
+     * True automatically applies the core.Observable mixin
+     * @member {Boolean} observable=true
+     * @static
+     */
+    static observable = true
+
     static config = {
         /**
          * @member {String} className='Neo.main.DeltaUpdates'
@@ -51,10 +59,43 @@ class DeltaUpdates extends Base {
     }
 
     /**
+     * The dynamically loaded coherence-registry singleton (`Neo.vdom.util.DeltaCoherenceRegistry`),
+     * present only while `Neo.config.useDeltaCoherenceRegistry` is enabled — Main-thread bundles
+     * stay tiny; with the flag off, the module never loads.
+     * @member {Object|null} coherenceRegistry=null
+     * @protected
+     */
+    coherenceRegistry = null
+    /**
+     * The dynamically loaded `Neo.vdom.util.DeltaGrammar` module namespace, present only while
+     * `Neo.config.useDeltaGrammarGuards` is enabled — same tiny-Main discipline as the registry.
+     * @member {Object|null} deltaGrammar=null
+     * @protected
+     */
+    deltaGrammar = null
+    /**
      * @member {Number} logDeltasIntervalId=0
      * @protected
      */
     logDeltasIntervalId = 0
+    /**
+     * @member {Boolean|null} nativeMoveBefore=null
+     * @protected
+     */
+    nativeMoveBefore = null
+
+    /**
+     * Parents that received a `moveBefore()` during the current delta batch and still need their box
+     * tree rebuilt once, collected by {@link #moveNode} and drained by {@link #flushLayoutHeals}.
+     *
+     * The rebuild is deferred rather than run per move because its cost scales with the parent's child
+     * count: doing it inside the loop makes reordering N siblings O(N²). Measured on a 590-item helix
+     * sort, the per-move form cost 8137ms of blocked main thread against 18ms for the same reorder
+     * without it.
+     * @member {Set|null} pendingLayoutHeals=null
+     * @protected
+     */
+    pendingLayoutHeals = null
 
     /**
      * @param {Object} config
@@ -62,16 +103,8 @@ class DeltaUpdates extends Base {
     construct(config) {
         super.construct(config);
 
-        let {environment} = NeoConfig;
-
         if (NeoConfig.renderCountDeltas) {
             this.renderCountDeltas = true
-        }
-
-        // We need different publicPath values for the main thread inside the webpack based dist envs,
-        // depending on the hierarchy level of the app entry point
-        if (environment === 'dist/development' || environment === 'dist/production') {
-            __webpack_require__.p = NeoConfig.basePath.substring(6)
         }
     }
 
@@ -107,8 +140,8 @@ class DeltaUpdates extends Base {
     /**
      * Changes the tag name (nodeName) of an existing HTMLElement in the DOM.
      * This operation is performed by creating a new HTML element with the desired `nodeName`,
-     * meticulously copying all attributes and the `innerHTML` from the original `node` to the new one,
-     * and then seamlessly replacing the original `node` with the newly created element within its parent.
+     * preserving attributes, live control properties, and child-node identity from the original `node`,
+     * and then replacing the original `node` with the newly created element within its parent.
      *
      * @param {HTMLElement} node     The existing DOM HTMLElement whose tag name needs to be changed.
      * @param {String}      nodeName The new tag name (e.g., 'div', 'span', 'p') for the element.
@@ -126,9 +159,50 @@ class DeltaUpdates extends Base {
                 clone.setAttribute(attribute.nodeName, attribute.nodeValue)
             }
 
-            clone.innerHTML= node.innerHTML;
+            while (node.firstChild) {
+                clone.appendChild(node.firstChild)
+            }
+
+            if (node.value !== undefined && node.value !== clone.value) {
+                clone.value = node.value
+            }
+
+            for (const key of voidAttributes) {
+                if (node[key] !== undefined && node[key] !== clone[key]) {
+                    clone[key] = node[key]
+                }
+            }
+
+            if (node.selectedIndex !== undefined && node.selectedIndex !== clone.selectedIndex) {
+                clone.selectedIndex = node.selectedIndex
+            }
+
+            if (node.scrollTop > 0) {
+                clone.scrollTop = node.scrollTop
+            }
+
+            if (node.scrollLeft > 0) {
+                clone.scrollLeft = node.scrollLeft
+            }
 
             node.parentNode.replaceChild(clone, node)
+        }
+    }
+
+    /**
+     *
+     */
+    checkRendererAvailability() {
+        const {render} = Neo.main;
+
+        if (NeoConfig.useDomApiRenderer) {
+            if (!render?.DomApiRenderer) {
+                throw new Error('Neo.main.DeltaUpdates: DomApiRenderer is not loaded yet!')
+            }
+        } else {
+            if (!render?.StringBasedRenderer) {
+                throw new Error('Neo.main.DeltaUpdates: StringBasedRenderer is not loaded yet!')
+            }
         }
     }
 
@@ -138,6 +212,32 @@ class DeltaUpdates extends Base {
      */
     focusNode({id}) {
         DomAccess.getElement(id)?.focus()
+    }
+
+    /**
+     * Imports the flag-gated dev/test delta instruments (if not already imported):
+     * the delta grammar guards for `Neo.config.useDeltaGrammarGuards`, and the coherence
+     * registry for `Neo.config.useDeltaCoherenceRegistry`.
+     *
+     * Dynamic on purpose — Main-thread bundles must stay tiny: with both flags off, neither
+     * module ships a byte into the page. Re-invoked on runtime config changes, so the flags
+     * can be enabled mid-session (e.g. through the Neural Link).
+     * @returns {Promise<void>}
+     * @protected
+     */
+    async importDeltaInstruments() {
+        let me = this;
+
+        if (NeoConfig.useDeltaGrammarGuards && !me.deltaGrammar) {
+            me.deltaGrammar = await import('../vdom/util/DeltaGrammar.mjs')
+        }
+
+        if (NeoConfig.useDeltaCoherenceRegistry && !me.coherenceRegistry) {
+            const registry = (await import('../vdom/util/DeltaCoherenceRegistry.mjs')).default;
+
+            registry.windowId    = NeoConfig.windowId ?? null;
+            me.coherenceRegistry = registry
+        }
     }
 
     /**
@@ -175,7 +275,103 @@ class DeltaUpdates extends Base {
             scope          : me
         });
 
-        await me.importRenderer()
+        await Promise.all([
+            me.importDeltaInstruments(),
+            me.importRenderer()
+        ])
+    }
+
+    /**
+     * Helper to retrieve the start anchor comment of a Fragment using XPath.
+     * Fragments are rendered as a range anchored by `<!-- id-start -->` and `<!-- id-end -->`.
+     * @param {String} id The Fragment ID
+     * @returns {Comment|null}
+     */
+    getFragmentStart(id) {
+        const xpath = `//comment()[.=' ${id}-start ']`;
+        return document.evaluate(xpath, document.body, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+    }
+
+    /**
+     * Helper to calculate the reference sibling for insertion *inside* a Fragment's DOM range.
+     * Since a Fragment is not a real DOM parent, we must traverse its siblings to find the correct
+     * insertion point relative to the Start Anchor.
+     *
+     * @param {Node} startNode The Fragment start anchor
+     * @param {Number} index The logical index (relative to fragment content)
+     * @param {Node} [nodeToSkip] Optional node to skip during traversal (e.g. the node being moved)
+     * @returns {Node|null} The node to insert before, or null (append)
+     */
+    getFragmentSibling(startNode, index, nodeToSkip) {
+        let currentNode = startNode.nextSibling,
+            i           = 0;
+
+        // Traverse 'index' steps.
+        // If index is 0, we want nextSibling (insert after start).
+        // If index is 1, we want nextSibling.nextSibling.
+        while (currentNode && i < index) {
+            if (currentNode !== nodeToSkip) {
+                i++
+            }
+
+            currentNode = currentNode.nextSibling
+        }
+
+        return currentNode
+    }
+
+    /**
+     * Helper to retrieve all DOM nodes belonging to a Fragment.
+     * This walks the DOM from the Start Anchor until it hits the End Anchor, collecting all intermediate nodes.
+     * This is used for moving or removing the entire Fragment range.
+     *
+     * @param {HTMLElement} parentNode
+     * @param {String}      id
+     * @returns {Object|null} {startNode, endNode, nodes: []}
+     */
+    getFragmentNodes(parentNode, id) {
+        if (!parentNode) return null;
+
+        const
+            isComment  = Node.COMMENT_NODE,
+            startStr   = ` ${id}-start `,
+            childNodes = parentNode.childNodes;
+
+        let startNode = null,
+            i         = 0,
+            len       = childNodes.length,
+            n;
+
+        for (; i < len; i++) {
+            n = childNodes[i];
+            if (n.nodeType === isComment && n.nodeValue === startStr) {
+                startNode = n;
+                break
+            }
+        }
+
+        // Fallback for text nodes (if we want to unify, though text nodes use ` id `)
+        // For now, let's strictly handle Fragments here.
+
+        if (!startNode) return null;
+
+        const
+            endStr = ` ${id}-end `,
+            nodes  = [];
+
+        let currentNode = startNode.nextSibling;
+
+        while (currentNode) {
+            // Check if we hit the end anchor
+            if (currentNode.nodeType === isComment && currentNode.nodeValue === endStr) {
+                return {startNode, endNode: currentNode, nodes};
+            }
+
+            nodes.push(currentNode);
+            currentNode = currentNode.nextSibling
+        }
+
+        return null // End anchor not found (should not happen in healthy DOM)
     }
 
     /**
@@ -189,46 +385,180 @@ class DeltaUpdates extends Base {
      * @param {Number}         delta.index                  The index at which to insert the new node within its parent.
      * @param {String}         [delta.outerHTML]            The string representation of the new node (for string-based mounting).
      * @param {String}         delta.parentId               The ID of the parent DOM node.
+     * @param {Object[]}       [delta.postMountUpdates]     Array of post-mount updates (e.g. scroll state).
      * @param {Neo.vdom.VNode} [delta.vnode]                The VNode representation of the new node (for direct DOM API mounting).
      */
-    insertNode({hasLeadingTextChildren, index, outerHTML, parentId, vnode}) {
+    insertNode({hasLeadingTextChildren, index, outerHTML, parentId, postMountUpdates, vnode}) {
         this.checkRendererAvailability();
 
         let {render}   = Neo.main,
-            parentNode = DomAccess.getElementOrBody(parentId);
+            parentNode = DomAccess.getElement(parentId),
+            siblingRef;
 
-        if (parentNode) {
-            if (NeoConfig.useDomApiRenderer) {
-                render.DomApiRenderer.createDomTree({index, isRoot: true, parentNode, vnode})
-            } else {
-                render.StringBasedRenderer.insertNodeAsString({hasLeadingTextChildren, index, outerHTML, parentNode})
-            }
-        }
-    }
-
-    /**
-     *
-     */
-    checkRendererAvailability() {
-        const {render} = Neo.main;
-
-        if (NeoConfig.useDomApiRenderer) {
-            if (!render?.DomApiRenderer) {
-                throw new Error('Neo.main.DeltaUpdates: DomApiRenderer is not loaded yet!')
+        // 1. Resolve Target Parent & Sibling
+        if (!parentNode) {
+            const startNode = this.getFragmentStart(parentId);
+            if (startNode) {
+                parentNode = startNode.parentNode;
+                siblingRef = this.getFragmentSibling(startNode, index)
             }
         } else {
-            if (!render?.StringBasedRenderer) {
-                throw new Error('Neo.main.DeltaUpdates: StringBasedRenderer is not loaded yet!')
+            siblingRef = parentNode.childNodes[index]
+        }
+
+        if (parentNode) {
+            let localPostMountUpdates = [],
+                newNode;
+
+            if (NeoConfig.useDomApiRenderer) {
+                newNode = render.DomApiRenderer.createDomTree({
+                    index           : -1,
+                    isRoot          : true,
+                    parentNode      : null, // detached
+                    postMountUpdates: localPostMountUpdates,
+                    vnode
+                })
+            } else {
+                newNode = render.StringBasedRenderer.createNode({outerHTML});
+
+                if (postMountUpdates?.length > 0) {
+                    localPostMountUpdates.push(...postMountUpdates)
+                }
             }
+
+            if (newNode) {
+                parentNode.insertBefore(newNode, siblingRef || null);
+
+                if (localPostMountUpdates.length > 0) {
+                    localPostMountUpdates.forEach(update => {
+                        // DomApiRenderer format: {node, vnode}
+                        if (update.node) {
+                            if (update.vnode.scrollLeft) {update.node.scrollLeft = update.vnode.scrollLeft}
+                            if (update.vnode.scrollTop)  {update.node.scrollTop  = update.vnode.scrollTop}
+                        }
+                        // StringBasedRenderer format: {id, scrollLeft, scrollTop}
+                        else {
+                            let node = DomAccess.getElement(update.id);
+
+                            if (node) {
+                                if (update.scrollLeft) {node.scrollLeft = update.scrollLeft}
+                                if (update.scrollTop)  {node.scrollTop  = update.scrollTop}
+                            }
+                        }
+                    })
+                }
+            } else {
+                console.error('insertNode: Failed to create newNode', {outerHTML, vnode});
+            }
+        } else {
+            console.error('insertNode: Parent not found', {parentId, index});
         }
     }
 
     /**
-     * Moves an existing DOM node to a new position within its parent or to a new parent.
+     * Inserts a batch of new nodes into the DOM tree.
+     * This optimization groups contiguous 'insertNode' deltas targeting the same parent
+     * into a single DocumentFragment insertion, minimizing browser reflows.
+     *
+     * @param {Object[]} batch Array of delta objects to insert.
+     * @protected
+     */
+    insertNodeBatch(batch) {
+        const
+            firstDelta = batch[0],
+            parentId   = firstDelta.parentId,
+            index      = firstDelta.index;
+
+        let parentNode = DomAccess.getElement(parentId),
+            siblingRef;
+
+        // 1. Resolve Target Parent & Sibling
+        if (!parentNode) {
+            const startNode = this.getFragmentStart(parentId);
+            if (startNode) {
+                parentNode = startNode.parentNode;
+                siblingRef = this.getFragmentSibling(startNode, index)
+            }
+        } else {
+            siblingRef = parentNode.childNodes[index]
+        }
+
+        if (parentNode) {
+            const
+                fragment            = document.createDocumentFragment(),
+                {render}            = Neo.main,
+                allPostMountUpdates = [];
+
+            batch.forEach(delta => {
+                let localPostMountUpdates = delta.postMountUpdates || [],
+                    node;
+
+                if (NeoConfig.useDomApiRenderer) {
+                    node = render.DomApiRenderer.createDomTree({
+                        index           : -1,
+                        isRoot          : true,
+                        parentNode      : null, // detached
+                        postMountUpdates: localPostMountUpdates,
+                        vnode           : delta.vnode
+                    })
+                } else {
+                    node = render.StringBasedRenderer.createNode({outerHTML: delta.outerHTML})
+                }
+
+                if (node) {
+                    fragment.appendChild(node);
+                    if (localPostMountUpdates.length > 0) {
+                        allPostMountUpdates.push(...localPostMountUpdates)
+                    }
+                } else {
+                    console.error('insertNodeBatch: Failed to create node', delta);
+                }
+            });
+
+            parentNode.insertBefore(fragment, siblingRef || null);
+
+            // Apply all post-mount updates (e.g. scroll positions) after the batch insertion
+            if (allPostMountUpdates.length > 0) {
+                allPostMountUpdates.forEach(update => {
+                    // DomApiRenderer format: {node, vnode}
+                    if (update.node) {
+                        if (update.vnode.scrollLeft) {update.node.scrollLeft = update.vnode.scrollLeft}
+                        if (update.vnode.scrollTop)  {update.node.scrollTop  = update.vnode.scrollTop}
+                    }
+                    // StringBasedRenderer format: {id, scrollLeft, scrollTop}
+                    else {
+                        let node = DomAccess.getElement(update.id);
+
+                        if (node) {
+                            if (update.scrollLeft) {node.scrollLeft = update.scrollLeft}
+                            if (update.scrollTop)  {node.scrollTop  = update.scrollTop}
+                        }
+                    }
+                })
+            }
+        } else {
+            console.error('insertNodeBatch: Parent not found', {parentId, index});
+        }
+    }
+
+    /**
+     * Move an existing DOM node to a new position within its parent or to a new parent.
      * This method directly manipulates the DOM using the pre-calculated physical index,
      * accounting for potential text nodes wrapped in comments.
-     * It performs a direct sibling swap when an element is immediately followed by its target position,
-     * which is necessary to prevent attempting to replace a node with itself.
+     *
+     * **Atomic Moves & Focus Preservation:**
+     * If the browser supports `Element.moveBefore()`, it is used to atomically move the node
+     * without losing state (focus, iframe content, etc.).
+     *
+     * **Legacy Fallback:**
+     * For browsers without `moveBefore` (e.g. Safari), it falls back to `insertBefore` (or `replaceWith`).
+     * Since reparenting causes focus loss in these environments, it manually restores focus
+     * immediately after the move.
+     *
+     * **Fragment Support:**
+     * If the target `id` refers to a Fragment (which has no single DOM node), this method uses XPath
+     * to find the "Start Anchor", extracts the full range of nodes (Start...End) into a `DocumentFragment`,
+     * and moves that lightweight wrapper to the new location.
      *
      * @param {Object} delta
      * @param {String} delta.id       The ID of the DOM node to move.
@@ -237,27 +567,161 @@ class DeltaUpdates extends Base {
      */
     moveNode({id, index, parentId}) {
         let node       = DomAccess.getElement(id),
-            parentNode = DomAccess.getElement(parentId);
+            parentNode = DomAccess.getElement(parentId),
+            siblingRef;
 
-        if (node && parentNode) {
-            // If the target index is at or beyond the end of the parent's current childNodes, append the node.
-            if (index >= parentNode.childNodes.length) {
-                parentNode.appendChild(node)
+        // 1. Resolve Target Parent & Sibling
+        if (!parentNode) {
+            const startNode = this.getFragmentStart(parentId);
+            if (startNode) {
+                parentNode = startNode.parentNode;
+                siblingRef = this.getFragmentSibling(startNode, index)
+            }
+        } else {
+            // Standard parent: resolve sibling by index
+            if (node && node.parentNode === parentNode) {
+                // Check if we are moving forward in the same parent.
+                // If so, the current node is taking up an index, shifting our target.
+                const currentIndex = Array.prototype.indexOf.call(parentNode.childNodes, node);
+
+                if (currentIndex > -1 && currentIndex < index) {
+                    index++
+                }
+            }
+
+            if (index < parentNode.childNodes.length) {
+                siblingRef = parentNode.childNodes[index]
             } else {
-                // Get the reference node at the target physical index.
-                let referenceNode = parentNode.childNodes[index];
+                siblingRef = null // Append
+            }
+        }
 
-                // Only proceed if the node is not already at its target position.
-                if (node !== referenceNode) {
-                    // Perform a direct swap operation if immediate element siblings.
-                    if (node.nodeType === 1 && node === referenceNode.nextElementSibling) {
-                        node.replaceWith(referenceNode)
-                    }
+        // 2. Resolve Node to Move (Fragment fallback)
+        if (!node && parentNode) {
+            const
+                xpath     = `//comment()[.=' ${id}-start ']`,
+                startNode = document.evaluate(xpath, document.body, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
 
-                    parentNode.insertBefore(node, referenceNode)
+            if (startNode) {
+                const fragmentData = this.getFragmentNodes(startNode.parentNode, id);
+
+                if (fragmentData) {
+                    const fragment = document.createDocumentFragment();
+                    fragment.append(fragmentData.startNode, ...fragmentData.nodes, fragmentData.endNode);
+                    node = fragment
                 }
             }
         }
+
+        if (node && parentNode) {
+            // Only proceed if the node is not already at its target position.
+            // Note: For DocumentFragments (nodeType 11), we always move, as the fragment wrapper is transient.
+            if (node !== siblingRef) {
+                if (this.nativeMoveBefore === null) {
+                    this.nativeMoveBefore = typeof parentNode.moveBefore === 'function'
+                }
+
+                if (this.nativeMoveBefore) {
+                    parentNode.moveBefore(node, siblingRef || null);
+
+                    // Chromium (observed in 146 & 149) can leave the parent's box-tree sibling chain
+                    // stale after moveBefore(): the DOM order updates, but one neighbor keeps
+                    // rendering at its pre-move slot — and structural child-list changes do NOT
+                    // re-dirty it. The parent's boxes therefore need one rebuild, which
+                    // flushLayoutHeals() performs at the end of the batch.
+                    //
+                    // Deferred rather than done here: the rebuild costs O(parent's children), so
+                    // running it per move makes an N-sibling reorder O(N²). Batching is sound because
+                    // no paint occurs between deltas within a single update() task, making the
+                    // intermediate rebuilds unobservable — only the final box tree is ever displayed.
+                    (this.pendingLayoutHeals ||= new Set()).add(parentNode)
+                } else {
+                    const
+                        activeElement = document.activeElement,
+                        containsFocus = activeElement && (node === activeElement || node.contains(activeElement));
+
+                    // Perform a direct swap operation if immediate element siblings.
+                    if (node.nodeType === 1 && siblingRef && node === siblingRef.nextElementSibling) {
+                        node.replaceWith(siblingRef)
+                    }
+
+                    parentNode.insertBefore(node, siblingRef || null);
+
+                    if (containsFocus) {
+                        activeElement.focus()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * @summary Rebuilds the box tree of every parent that received a `moveBefore()` in this batch.
+     *
+     * `moveBefore()` can leave a parent's box-tree sibling chain stale in Chromium, and a structural
+     * child-list change does not re-dirty it. Toggling `display` forces the rebuild while keeping what
+     * `moveBefore` preserves — iframes and canvas survive it, unlike the `insertBefore` fallback which
+     * reloads iframes; only CSS-animation continuity inside the parent resets.
+     *
+     * Runs once per parent per batch rather than once per move. The toggle's cost scales with the
+     * parent's child count, so the per-move form made an N-sibling reorder O(N²) — measurably 8137ms
+     * for a 590-item reorder against 18ms without it. Deferring is safe because no paint happens
+     * between deltas inside one `update()` task, so every intermediate box tree was already invisible.
+     *
+     * Skipped entirely for a parent whose subtree is mid-transition, because `display: none` cancels
+     * running transitions rather than pausing them — see the gate's own reasoning below.
+     *
+     * The toggle zeroes the parent's own scroll position and can drop focus, so both are captured
+     * immediately before it and restored after. Boundary, unchanged from the per-move form: scrolled
+     * DESCENDANTS inside the parent also reset and are not walked here, since that would reintroduce a
+     * subtree scan.
+     * @protected
+     */
+    flushLayoutHeals() {
+        const parents = this.pendingLayoutHeals;
+
+        if (!parents) return;
+
+        // Cleared first: a throw inside the loop must not strand this batch's parents into the next one.
+        this.pendingLayoutHeals = null;
+
+        parents.forEach(parentNode => {
+            // A parent moved into and out of the document within the same batch has no boxes to heal.
+            if (!parentNode.isConnected) return;
+
+            const
+                activeElement           = document.activeElement,
+                containsFocus           = activeElement && parentNode.contains(activeElement),
+                displayValue            = parentNode.style.display,
+                {scrollLeft, scrollTop} = parentNode;
+
+            // Setting `display: none` CANCELS every running CSS transition and animation in the subtree
+            // — an element with no box has no running transitions to resume. So a parent whose children
+            // are mid-flight cannot be healed this way without destroying the motion outright, which is
+            // exactly what it did: a sorted 590-item helix reordered and snapped instead of animating.
+            //
+            // The two harms are not symmetric. The cancellation is certain and plainly visible; the
+            // staleness this heals is a Chromium sibling-chain artifact that has never been reported
+            // under animation, and a subtree that is animating is being repainted every frame anyway.
+            // Skipping while animating therefore trades a guaranteed regression for a hypothetical one.
+            //
+            // It also costs the grid case nothing, which is where the heal came from: a column drag
+            // reorders siblings that carry no transitions, so this gate never fires there.
+            if (parentNode.getAnimations?.({subtree: true}).length > 0) return;
+
+            parentNode.style.display = 'none';
+            void parentNode.offsetHeight;
+            parentNode.style.display = displayValue;
+
+            if (scrollLeft || scrollTop) {
+                parentNode.scrollLeft = scrollLeft;
+                parentNode.scrollTop  = scrollTop
+            }
+
+            if (containsFocus && document.activeElement !== activeElement) {
+                activeElement.focus()
+            }
+        })
     }
 
     /**
@@ -267,8 +731,14 @@ class DeltaUpdates extends Base {
      * @return {Promise<void>}
      */
     async onNeoConfigChange(config) {
+        let me = this;
+
         if (Object.hasOwn(config, 'useDomApiRenderer')) {
-            await this.importRenderer()
+            await me.importRenderer()
+        }
+
+        if (Object.hasOwn(config, 'useDeltaGrammarGuards') || Object.hasOwn(config, 'useDeltaCoherenceRegistry')) {
+            await me.importDeltaInstruments()
         }
     }
 
@@ -304,17 +774,40 @@ class DeltaUpdates extends Base {
         if (node) {
             node.remove();
         }
-        // Potentially a vtype: 'text' node (wrapped between 2 comments)
+        // Potentially a vtype: 'text' node or a Fragment (wrapped between 2 comments)
         else if (parentId) {
-            const
-                parentNode = DomAccess.getElementOrBody(parentId),
-                isComment  = Node.COMMENT_NODE;
+            const parentNode = DomAccess.getElementOrBody(parentId);
 
             if (parentNode) {
+                // 1. Try Fragment Removal
+                const fragmentData = this.getFragmentNodes(parentNode, id);
+
+                if (fragmentData) {
+                    fragmentData.startNode.remove();
+                    fragmentData.endNode.remove();
+                    fragmentData.nodes.forEach(n => n.remove());
+                    return
+                }
+
+                // 2. Text Node Logic
+                const
+                    isComment  = Node.COMMENT_NODE,
+                    searchStr  = ` ${id} `,
+                    childNodes = parentNode.childNodes;
+
+                let startComment = null,
+                    i            = 0,
+                    len          = childNodes.length,
+                    n;
+
                 // Find the starting comment node using its id marker
-                const startComment = Array.from(parentNode.childNodes).find(n =>
-                    n.nodeType === isComment && n.nodeValue.includes(` ${id} `)
-                );
+                for (; i < len; i++) {
+                    n = childNodes[i];
+                    if (n.nodeType === isComment && n.nodeValue.includes(searchStr)) {
+                        startComment = n;
+                        break
+                    }
+                }
 
                 if (startComment) {
                     const
@@ -368,13 +861,18 @@ class DeltaUpdates extends Base {
      */
     updateNode(delta) {
         let me   = this,
-            node = DomAccess.getElementOrBody(delta.id);
+            node = DomAccess.getElementOrBody(delta.id),
+            key, prop, val, value;
 
         if (node) {
-            Object.entries(delta).forEach(([prop, value]) => {
+            for (prop in delta) {
+                value = delta[prop];
+
                 switch (prop) {
                     case 'attributes':
-                        Object.entries(value).forEach(([key, val]) => {
+                        for (key in value) {
+                            val = value[key];
+
                             if (voidAttributes.has(key)) {
                                 node[key] = val === 'true' // vnode attribute values get converted into strings
                             } else if (val === null || val === '') {
@@ -395,7 +893,7 @@ class DeltaUpdates extends Base {
                                     node.setAttribute(key, val)
                                 }
                             }
-                        });
+                        }
                         break
                     case 'cls':
                         value.add    && node.classList.add(...value.add);
@@ -410,9 +908,14 @@ class DeltaUpdates extends Base {
                     case 'outerHTML':
                         node.outerHTML = value || '';
                         break
+                    case 'scrollLeft':
+                    case 'scrollTop':
+                        node[prop] = value;
+                        break
                     case 'style':
                         if (Neo.isObject(value)) {
-                            Object.entries(value).forEach(([key, val]) => {
+                            for (key in value) {
+                                val = value[key];
                                 let important;
 
                                 if (Neo.isString(val) && val.includes('!important')) {
@@ -421,14 +924,14 @@ class DeltaUpdates extends Base {
                                 }
 
                                 node.style.setProperty(Neo.decamel(key), val, important)
-                            })
+                            }
                         }
                         break
                     case 'textContent':
                         node.textContent = value;
                         break
                 }
-            })
+            }
         }
     }
 
@@ -445,12 +948,95 @@ class DeltaUpdates extends Base {
      * @param {String} delta.value    The new text content to be applied to the virtual text node.
      */
     updateVtext({id, parentId, value}) {
-        let node      = DomAccess.getElement(parentId),
-            innerHTML = node.innerHTML,
-            startTag  = `<!-- ${id} -->`,
-            reg       = new RegExp(startTag + '[\\s\\S]*?<!-- \/neo-vtext -->');
+        const
+            node      = DomAccess.getElement(parentId),
+            isComment = Node.COMMENT_NODE,
+            idString  = ` ${id} `;
 
-        node.innerHTML = innerHTML.replace(reg, value)
+        if (node) {
+            const childNodes = node.childNodes;
+
+            let startComment = null,
+                i            = 0,
+                len          = childNodes.length,
+                n;
+
+            for (; i < len; i++) {
+                n = childNodes[i];
+                if (n.nodeType === isComment && n.nodeValue === idString) {
+                    startComment = n;
+                    break
+                }
+            }
+
+            if (startComment?.nextSibling) {
+                startComment.nextSibling.nodeValue = value
+            }
+        }
+    }
+
+    /**
+     * @summary Evaluates a final pre-apply delta batch against the coherence registry, observe-mode.
+     *
+     * Cross-batch coherence findings (insert-on-live-id, retired-id targets, rename collisions)
+     * are logged for measurement only — the registry ships observe-first like the U5 candidate;
+     * promotion to a throwing guard is gated on whitebox-e2e falsification evidence against the
+     * real multi-threaded pipeline. Returns the ledger commit handle: the caller invokes it
+     * strictly AFTER the batch applied to the DOM, so a guard-rejected or
+     * mid-application-aborted batch never mutates the ledger.
+     *
+     * The registry is the per-Main-realm singleton `this.coherenceRegistry`, dynamically loaded
+     * by `importDeltaInstruments()` — each browser window owns its own realm, which IS the
+     * `{windowId, idSort, id}` partition.
+     * @param {Object[]} deltas The normalized batch after `update` listeners had their mutation window.
+     * @returns {Function} The ledger commit handle
+     * @protected
+     */
+    observeDeltaCoherence(deltas) {
+        const evaluation = this.coherenceRegistry.evaluateBatch(deltas);
+
+        if (evaluation.findings.length > 0) {
+            console.warn('Delta coherence findings', {deltas, findings: evaluation.findings})
+        }
+
+        return evaluation.commit
+    }
+
+    /**
+     * @summary Validates a final pre-apply delta batch before dispatch.
+     *
+     * Runs the guard-grade delta grammar predicates over the post-event batch. Guard findings
+     * throw before dispatch so the operation rejects atomically; U5 structural uniqueness
+     * remains observe-only until its real-world corpus has been falsified.
+     * @param {Object[]} deltas The normalized batch after `update` listeners had their mutation window.
+     * @throws {Error} If guard-grade delta grammar findings are present.
+     * @protected
+     */
+    validateDeltaGrammarBatch(deltas) {
+        const
+            {checkStructuralUniqueness, validateBatch} = this.deltaGrammar,
+            validation                                 = validateBatch(deltas, {useDomApiRenderer: NeoConfig.useDomApiRenderer}),
+            context                                    = {
+                deltas,
+                useDomApiRenderer: NeoConfig.useDomApiRenderer
+            };
+
+        if (!validation.valid) {
+            const error = new Error('Neo.main.DeltaUpdates: delta grammar validation failed');
+
+            error.code = 'NEO_DELTA_GRAMMAR_INVALID';
+            error.findings = validation.findings;
+
+            console.error('Delta grammar validation failed', {...context, findings: validation.findings});
+
+            throw error
+        }
+
+        const candidateFindings = checkStructuralUniqueness(deltas);
+
+        if (candidateFindings.length > 0) {
+            console.warn('Delta grammar candidate findings', {...context, findings: candidateFindings})
+        }
     }
 
     /**
@@ -473,13 +1059,41 @@ class DeltaUpdates extends Base {
     update(data) {
         this.checkRendererAvailability();
 
-        let me       = this,
-            {deltas} = data,
-            i        = 0,
+        let me              = this,
+            {deltas}        = data,
+            coherenceCommit = null,
+            i               = 0,
             len;
 
         deltas = Array.isArray(deltas) ? deltas : [deltas];
         len    = deltas.length;
+
+        // Fire an event before applying the deltas.
+        // Important: Listeners receive the `data` object by reference.
+        // This is an intentional design choice to allow "just-in-time" inline delta editing.
+        // Addons (like GridRowPinning) can safely mutate the deltas array or individual delta
+        // properties here, and those modifications will be consumed directly by the update loop below.
+        me.fire('update', data);
+
+        // The instruments load dynamically (importDeltaInstruments); a just-flipped flag is
+        // inert until its module arrives — dev-mode graceful, deterministic after init.
+        if (NeoConfig.useDeltaGrammarGuards && me.deltaGrammar) {
+            // Keep the enabled guard path aligned with post-event array mutations.
+            len = deltas.length;
+
+            if (len > 0) {
+                me.validateDeltaGrammarBatch(deltas)
+            }
+        }
+
+        if (NeoConfig.useDeltaCoherenceRegistry && me.coherenceRegistry) {
+            // Keep the enabled registry path aligned with post-event array mutations.
+            len = deltas.length;
+
+            if (len > 0) {
+                coherenceCommit = me.observeDeltaCoherence(deltas)
+            }
+        }
 
         if (NeoConfig.logDeltaUpdates && len > 0) {
             me.countDeltas += len;
@@ -491,15 +1105,52 @@ class DeltaUpdates extends Base {
             me.countDeltasPer250ms += len
         }
 
-        for (; i < len; i++) {
-            me[deltas[i].action || 'updateNode'](deltas[i])
+        try {
+            while (i < len) {
+                const delta = deltas[i];
+
+                // Batching optimization for sequential insertNode operations
+                if (delta.action === 'insertNode' && i < len - 1) {
+                    let j     = i + 1,
+                        batch = [delta];
+
+                    while (j < len) {
+                        const
+                            nextDelta = deltas[j],
+                            prevDelta = deltas[j - 1];
+
+                        if (
+                            nextDelta.action === 'insertNode' &&
+                            nextDelta.parentId === delta.parentId &&
+                            nextDelta.index === prevDelta.index + 1 // Ensure sequential indices
+                        ) {
+                            batch.push(nextDelta);
+                            j++
+                        } else {
+                            break
+                        }
+                    }
+
+                    if (batch.length > 1) {
+                        me.insertNodeBatch(batch);
+                        i = j; // Skip the processed batch
+                        continue
+                    }
+                }
+
+                // Fallback for non-batched operations
+                me[delta.action || 'updateNode'](delta);
+                i++
+            }
+        } finally {
+            // In `finally` deliberately: a delta that throws mid-batch would otherwise leave an
+            // already-moved parent rendering from a stale sibling chain until some unrelated later
+            // batch happened to heal it. The moves that did land still need their one rebuild.
+            me.flushLayoutHeals()
         }
 
-        Neo.worker.Manager.sendMessage(data.origin || 'app', {
-            action : 'reply',
-            replyId: data.id,
-            success: true
-        })
+        // The ledger mirrors what reached the DOM: commit only after the batch applied.
+        coherenceCommit?.()
     }
 }
 

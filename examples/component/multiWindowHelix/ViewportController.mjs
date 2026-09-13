@@ -26,7 +26,7 @@ class ViewportController extends Controller {
             {windowId}                 = me,
             {config, windowConfigs}    = Neo,
             {environment}              = config,
-            firstWindowId              = parseInt(Object.keys(windowConfigs)[0]),
+            firstWindowId              = Object.keys(windowConfigs)[0],
             {basePath}                 = windowConfigs[firstWindowId],
             widget                     = me.getReference('controls-panel'),
             winData                    = await Neo.Main.getWindowData({windowId}),
@@ -74,7 +74,7 @@ class ViewportController extends Controller {
 
         if (appName === 'HelixControls') {
             let controlsPanel = me.getReference('controls-panel'),
-                {mainView}    = Neo.apps[appName];
+                {mainView}    = Neo.apps[data.windowId];
 
             me.connectedApps.push(appName);
 
@@ -94,9 +94,8 @@ class ViewportController extends Controller {
             {appName, windowId} = data;
 
         if (appName === 'HelixControls') {
-            me.getReference('header-toolbar').hidden = false;
-
-            me.component.add(me.getReference('controls-panel'))
+            me.component.add(me.getReference('controls-panel'));
+            me.getReference('header-toolbar').hidden = false
         }
         // Close popup windows when closing or reloading the main window
         else if (appName === 'Neo.examples.component.multiWindowHelix') {

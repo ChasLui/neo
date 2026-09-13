@@ -157,13 +157,14 @@ class Circle extends Component {
     construct(config) {
         super.construct(config);
 
-        Neo.main.DomEvents.registerPreventDefaultTargets({
-            name: 'contextmenu',
-            cls : ['neo-circle', 'neo-circle-back']
-        });
-
         let me              = this,
             {resourcesPath} = Neo.config;
+
+        Neo.main.DomEvents.registerPreventDefaultTargets({
+            name    : 'contextmenu',
+            cls     : ['neo-circle', 'neo-circle-back'],
+            windowId: me.windowId
+        });
 
         if (!me.backsideIconPath) {
             me.backsideIconPath = resourcesPath + 'images/circle/'
@@ -192,9 +193,14 @@ class Circle extends Component {
             scope     : me
         }, {
             contextmenu: me.onContextMenu,
-            wheel      : me.onMouseWheel,
             delegate   : 'neo-circle',
-            scope      : me
+            scope      : me,
+            wheel      : {
+                bubble : false,
+                fn     : me.onMouseWheel,
+                local  : true,
+                passive: false
+            }
         }]);
 
         me.store = Neo.create(Collection, {
@@ -208,6 +214,27 @@ class Circle extends Component {
         me.updateTitle(true);
 
         me.update()
+    }
+
+    /**
+     * Triggered after the windowId config got changed
+     * @param {Number|String|null} value
+     * @param {Number|String|null} oldValue
+     * @protected
+     */
+    afterSetWindowId(value, oldValue) {
+        super.afterSetWindowId(value, oldValue);
+
+        if (value) {
+            let appConfig = Neo.windowConfigs?.[value] || Neo.config;
+
+            if (this.backsideIconPath === Neo.config.resourcesPath + 'images/circle/') {
+                this.backsideIconPath = appConfig.resourcesPath + 'images/circle/';
+            }
+            if (this.itemImagePath === Neo.config.resourcesPath + 'examples/images/') {
+                this.itemImagePath = appConfig.resourcesPath + 'examples/images/';
+            }
+        }
     }
 
     /**
@@ -608,23 +635,21 @@ class Circle extends Component {
     /**
      *
      */
-    loadData() {
-        let me = this;
+    async loadData() {
+        let me = this,
+            data;
 
-        // todo: use a real store, not defined here for the examples
-        Neo.Xhr.promiseJson({
+        data = await me.trap(Neo.Xhr.promiseJson({
             insideNeo: true,
             url      : me.url
-        }).then(data => {
-            me.store.items = data.json.data;
+        }));
 
-            me.timeout(100).then(() => {
-                me.updateTitle();
-                me.createItems()
-            })
-        }).catch(err => {
-            console.log('Error for Neo.Xhr.request', err, me.id)
-        })
+        me.store.items = data.json.data;
+
+        await me.timeout(100);
+
+        me.updateTitle();
+        me.createItems()
     }
 
     /**

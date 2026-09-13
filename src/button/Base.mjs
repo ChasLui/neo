@@ -1,9 +1,19 @@
-import Component from '../component/Base.mjs';
-import NeoArray  from '../util/Array.mjs';
+import Component      from '../component/Base.mjs';
+import NeoArray       from '../util/Array.mjs';
+import {isDescriptor} from '../core/ConfigSymbols.mjs';
 
 /**
+ * @summary The default button component for the Neo.mjs framework.
+ *
+ * This class extends `Neo.component.Base` and offers comprehensive configurations for
+ * text, icons, badges, and event handling. It supports advanced features like
+ * internal routing, external URL redirection, and optional ripple effects on click.
+ * This class serves as the foundation for other specialized button types like
+ * SplitButton, TabHeaderButton, and GridHeaderButton.
+ *
  * @class Neo.button.Base
  * @extends Neo.component.Base
+ * @see Neo.examples.button.base.MainContainer
  */
 class Button extends Component {
     /**
@@ -52,12 +62,29 @@ class Button extends Component {
          */
         editRoute: true,
         /**
-         * Shortcut for domListeners={click:handler}
-         * A string based value assumes that the handlerFn lives inside a controller.Component
-         * @member {Function|String|null} handler_=null
+         * Shortcut for domListeners={click:handler}.
+         * A string-based value assumes that the handlerFn lives inside a controller.Component.
+         *
+         * This config uses a custom `isEqual` function to ensure proper reactivity.
+         * When the handler is a function, it's often a closure that changes on each render
+         * (e.g., in recycled components like grid cells). The default deep comparison
+         * (`Neo.isEqual`) would incorrectly treat structurally identical functions as unchanged,
+         * preventing updates. The custom `isEqual` forces an update for new function instances,
+         * while performing a standard equality check for string-based handlers.
+         * @member {Function|String|null} handler_
          * @reactive
          */
-        handler_: null,
+        handler_: {
+            [isDescriptor]: true,
+            value         : null,
+
+            isEqual: (a, b) => {
+                if (Neo.isFunction(a) && Neo.isFunction(b)) {
+                    return false
+                }
+                return a === b
+            }
+        },
         /**
          * The scope (this pointer) inside the handler function.
          * Points to the button instance by default.
@@ -186,7 +213,7 @@ class Button extends Component {
     }
 
     /**
-     * @param {Object} config
+     * @param {Object} config The configuration object for the button instance.
      */
     construct(config) {
         super.construct(config);
@@ -199,24 +226,12 @@ class Button extends Component {
         })
     }
 
-    /**
-     * Workaround fix for: https://github.com/neomjs/neo/issues/6659
-     * Todo: inspect this further (we do not want to add fixed ids for all child nodes)
-     * Triggered after the id config got changed
-     * @param {String} value
-     * @param {String} oldValue
-     * @protected
-     */
-    afterSetId(value, oldValue) {
-        super.afterSetId(value, oldValue);
 
-        this.textNode.id = value + '__text'
-    }
 
     /**
      * Triggered after the badgePosition config got changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {String} value    The new value of the badgePosition config.
+     * @param {String} oldValue The old value of the badgePosition config.
      * @protected
      */
     afterSetBadgePosition(value, oldValue) {
@@ -234,8 +249,8 @@ class Button extends Component {
 
     /**
      * Triggered after the badgeText config got changed
-     * @param {String|null} value
-     * @param {String|null} oldValue
+     * @param {String|null} value    The new value of the badgeText config.
+     * @param {String|null} oldValue The old value of the badgeText config.
      * @protected
      */
     afterSetBadgeText(value, oldValue) {
@@ -248,9 +263,28 @@ class Button extends Component {
     }
 
     /**
+     * Mirrors the framework-generic disabled state onto an effective native button root.
+     * The parent hook keeps toggling the `neo-disabled` class, which remains the sole styling
+     * authority: projecting the attribute activates the UA `button:disabled` cascade, so
+     * `button/Base.scss` pins the one axis the class does not declare (`color`), and the
+     * render-equivalence component spec witnesses that the attribute contributes no paint.
+     * The DOM-event manager remains defense in depth. URL and non-editing route configs turn the
+     * root into an anchor, where the native `disabled` attribute has no semantics and must not
+     * be projected.
+     * @param {Boolean} value    The new value of the disabled config.
+     * @param {Boolean} oldValue The old value of the disabled config.
+     * @protected
+     */
+    afterSetDisabled(value, oldValue) {
+        super.afterSetDisabled(value, oldValue);
+        this.syncNativeDisabledState();
+        this.update()
+    }
+
+    /**
      * Triggered after the iconCls config got changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {String} value    The new value of the iconCls config.
+     * @param {String} oldValue The old value of the iconCls config.
      * @protected
      */
     afterSetIconCls(value, oldValue) {
@@ -265,8 +299,8 @@ class Button extends Component {
 
     /**
      * Triggered after the iconColor config got changed
-     * @param {String|null} value
-     * @param {String|null} oldValue
+     * @param {String|null} value    The new value of the iconColor config.
+     * @param {String|null} oldValue The old value of the iconColor config.
      * @protected
      */
     afterSetIconColor(value, oldValue) {
@@ -286,8 +320,8 @@ class Button extends Component {
 
     /**
      * Triggered after the iconPosition config got changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {String} value    The new value of the iconPosition config.
+     * @param {String} oldValue The old value of the iconPosition config.
      * @protected
      */
     afterSetIconPosition(value, oldValue) {
@@ -301,8 +335,8 @@ class Button extends Component {
 
     /**
      * Triggered after the menu config got changed
-     * @param {Object|Object[]|null} value
-     * @param {Object|Object[]|null} oldValue
+     * @param {Object|Object[]|null} value    The new value of the menu config.
+     * @param {Object|Object[]|null} oldValue The old value of the menu config.
      * @protected
      */
     afterSetMenu(value, oldValue) {
@@ -342,8 +376,8 @@ class Button extends Component {
 
     /**
      * Triggered after the pressed config got changed
-     * @param {Boolean} value
-     * @param {Boolean} oldValue
+     * @param {Boolean} value    The new value of the pressed config.
+     * @param {Boolean} oldValue The old value of the pressed config.
      * @protected
      */
     afterSetPressed(value, oldValue) {
@@ -355,8 +389,8 @@ class Button extends Component {
 
     /**
      * Triggered after the route config got changed
-     * @param {String|null} value
-     * @param {String|null} oldValue
+     * @param {String|null} value    The new value of the route config.
+     * @param {String|null} oldValue The old value of the route config.
      * @protected
      */
     afterSetRoute(value, oldValue) {
@@ -365,8 +399,8 @@ class Button extends Component {
 
     /**
      * Triggered after the theme config got changed
-     * @param {String|null} value
-     * @param {String|null} oldValue
+     * @param {String|null} value    The new value of the theme config.
+     * @param {String|null} oldValue The old value of the theme config.
      * @protected
      */
     afterSetTheme(value, oldValue) {
@@ -381,8 +415,8 @@ class Button extends Component {
 
     /**
      * Triggered after the text config got changed
-     * @param {Object[]|String|null} value
-     * @param {Object[]|String|null} oldValue
+     * @param {Object[]|String|null} value    The new value of the text config.
+     * @param {Object[]|String|null} oldValue The old value of the text config.
      * @protected
      */
     afterSetText(value, oldValue) {
@@ -410,8 +444,8 @@ class Button extends Component {
 
     /**
      * Triggered after the url config got changed
-     * @param {String|null} value
-     * @param {String|null} oldValue
+     * @param {String|null} value    The new value of the url config.
+     * @param {String|null} oldValue The old value of the url config.
      * @protected
      */
     afterSetUrl(value, oldValue) {
@@ -420,8 +454,8 @@ class Button extends Component {
 
     /**
      * Triggered after the useRippleEffect config got changed
-     * @param {Boolean} value
-     * @param {Boolean} oldValue
+     * @param {Boolean} value    The new value of the useRippleEffect config.
+     * @param {Boolean} oldValue The old value of the useRippleEffect config.
      * @protected
      */
     afterSetUseRippleEffect(value, oldValue) {
@@ -432,8 +466,8 @@ class Button extends Component {
 
     /**
      * Triggered after the urlTarget config got changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {String} value    The new value of the urlTarget config.
+     * @param {String} oldValue The old value of the urlTarget config.
      * @protected
      */
     afterSetUrlTarget(value, oldValue) {
@@ -451,8 +485,8 @@ class Button extends Component {
 
     /**
      * Triggered after the windowId config got changed
-     * @param {Number|null} value
-     * @param {Number|null} oldValue
+     * @param {Number|null} value    The new value of the windowId config.
+     * @param {Number|null} oldValue The old value of the windowId config.
      * @protected
      */
     afterSetWindowId(value, oldValue) {
@@ -482,8 +516,8 @@ class Button extends Component {
 
     /**
      * Triggered before the badgePosition config gets changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {String} value    The new value of the badgePosition config.
+     * @param {String} oldValue The old value of the badgePosition config.
      * @returns {String}
      * @protected
      */
@@ -493,8 +527,8 @@ class Button extends Component {
 
     /**
      * Triggered before the iconCls config gets changed. Converts the string into an array if needed.
-     * @param {Array|String|null} value
-     * @param {Array|String|null} oldValue
+     * @param {Array|String|null} value    The new value of the iconCls config.
+     * @param {Array|String|null} oldValue The old value of the iconCls config.
      * @returns {Array}
      * @protected
      */
@@ -508,8 +542,8 @@ class Button extends Component {
 
     /**
      * Triggered before the iconPosition config gets changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {String} value    The new value of the iconPosition config.
+     * @param {String} oldValue The old value of the iconPosition config.
      * @protected
      */
     beforeSetIconPosition(value, oldValue) {
@@ -517,6 +551,7 @@ class Button extends Component {
     }
 
     /**
+     * Changes the application's route based on the button's route config.
      * @protected
      */
     changeRoute() {
@@ -524,7 +559,8 @@ class Button extends Component {
     }
 
     /**
-     * @param args
+     * Destroys the button instance, its menu (if present), and calls the superclass destroy method.
+     * @param {...*} args Arguments to pass to the superclass destroy method.
      */
     destroy(...args) {
         this.menuList?.destroy(true, false);
@@ -532,7 +568,9 @@ class Button extends Component {
     }
 
     /**
-     * @param {Object} data
+     * Handles the click event on the button.
+     * Triggers the configured handler, toggles the menu, updates the route, and shows the ripple effect if applicable.
+     * @param {Object} data The click event data object.
      */
     onClick(data) {
         let me = this;
@@ -546,7 +584,8 @@ class Button extends Component {
     }
 
     /**
-     * @param {Object} data
+     * Displays a ripple animation effect on the button.
+     * @param {Object} data The click event data object used to calculate the ripple position.
      */
     async showRipple(data) {
         let me                   = this,
@@ -586,7 +625,7 @@ class Button extends Component {
     }
 
     /**
-     *
+     * Toggles the visibility of the button's menu, if one is configured.
      */
     async toggleMenu() {
         let {menuList} = this,
@@ -600,7 +639,52 @@ class Button extends Component {
     }
 
     /**
+     * Serializes the button into a JSON-compatible object.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me      = this,
+            handler = me.handler;
+
+        return {
+            ...super.toJSON(),
+            badgePosition: me.badgePosition,
+            badgeText    : me.badgeText,
+            handler      : Neo.isString(handler) ? handler : (Neo.isFunction(handler) ? 'function' : null),
+            iconCls      : me.iconCls,
+            iconColor    : me.iconColor,
+            iconPosition : me.iconPosition,
+            pressed      : me.pressed,
+            route        : me.route,
+            text         : me.text,
+            url          : me.url,
+            urlTarget    : me.urlTarget
+        }
+    }
+
+    /**
+     * @summary Reconciles the native disabled attribute with the Button's effective root tag.
      *
+     * Button roots are polymorphic: URL and non-editing route configs render anchors, while the
+     * default shape renders a native button. Only the latter understands the `disabled` attribute.
+     *
+     * @protected
+     */
+    syncNativeDisabledState() {
+        let vdomRoot = this.getVdomRoot();
+
+        if (vdomRoot.tag === 'button' && this.disabled) {
+            vdomRoot.disabled = true
+        } else {
+            delete vdomRoot.disabled
+        }
+    }
+
+    /**
+     * @summary Updates the effective root tag and reconciles tag-owned native attributes.
+     *
+     * Switches between `button` and `a` based on URL/non-editing-route configuration. Since the
+     * root is polymorphic, native disabled semantics are reconciled in the same transition owner.
      */
     updateTag() {
         let me                      = this,
@@ -620,6 +704,7 @@ class Button extends Component {
             vdomRoot.tag = 'button'
         }
 
+        me.syncNativeDisabledState();
         me.update()
     }
 }

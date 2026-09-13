@@ -28,7 +28,8 @@ class Helper extends Base {
         remote: {
             app: [
                 'create',
-                'update'
+                'update',
+                'updateBatch'
             ]
         },
         /**
@@ -54,6 +55,12 @@ class Helper extends Base {
             return deltas;
         }
 
+        // Fragments are "transparent" containers. They do not have physical DOM attributes or styles.
+        // Therefore, we skip attribute comparison entirely.
+        if (vnode.nodeName === 'fragment') {
+            return deltas
+        }
+
         let delta = {},
             attributes, value, keys, styles, add, remove;
 
@@ -67,59 +74,101 @@ class Helper extends Base {
         } else {
             keys = Object.keys(vnode);
 
-            Object.keys(oldVnode).forEach(prop => {
-                if (!Object.hasOwn(vnode, prop)) {
-                    keys.push(prop)
-                } else if (prop === 'attributes') { // Find removed attributes
-                    Object.keys(oldVnode[prop]).forEach(attr => {
-                        if (!Object.hasOwn(vnode[prop], attr)) {
-                            vnode[prop][attr] = null
+            let prop, attr;
+            for (prop in oldVnode) {
+                if (Object.hasOwn(oldVnode, prop)) {
+                    if (!Object.hasOwn(vnode, prop)) {
+                        keys.push(prop)
+                    } else if (prop === 'attributes') { // Find removed attributes
+                        for (attr in oldVnode[prop]) {
+                            if (Object.hasOwn(oldVnode[prop], attr) && !Object.hasOwn(vnode[prop], attr)) {
+                                vnode[prop][attr] = null
+                            }
                         }
-                    })
+                    }
                 }
-            });
+            }
 
-            keys.forEach(prop => {
+            let i = 0, len = keys.length, key, val, oldValue, hasOldValue, hasAttributes;
+            for (; i < len; i++) {
+                prop = keys[i];
                 value = vnode[prop];
 
                 switch (prop) {
                     case 'attributes':
                         attributes = {};
+                        hasAttributes = false;
 
-                        Object.entries(value).forEach(([key, value]) => {
-                            const
-                                oldValue    = oldVnode.attributes[key],
+                        for (key in value) {
+                            if (Object.hasOwn(value, key)) {
+                                val = value[key];
+                                oldValue = oldVnode.attributes[key];
                                 hasOldValue = Object.hasOwn(oldVnode.attributes, key);
 
-                            // If the attribute has an old value AND the value hasn't changed, skip.
-                            if (hasOldValue && oldValue === value) {
-                                return
+                                // If the attribute has an old value AND the value hasn't changed, skip.
+                                if (hasOldValue && oldValue === val) {
+                                    continue
+                                }
+
+                                // If the current value is null, or it's a non-string empty value (e.g., [], {}), skip.
+                                // Note: An empty string ('') is a valid value and should NOT be skipped here.
+                                if (val !== null && !Neo.isString(val) && Neo.isEmpty(val)) {
+                                    continue
+                                }
+
+                                attributes[key] = val;
+                                hasAttributes = true;
                             }
+                        }
 
-                            // If the current value is null, or it's a non-string empty value (e.g., [], {}), skip.
-                            // Note: An empty string ('') is a valid value and should NOT be skipped here.
-                            if (value !== null && !Neo.isString(value) && Neo.isEmpty(value)) {
-                                return
-                            }
-
-                            attributes[key] = value
-                        });
-
-                        if (Object.keys(attributes).length > 0) {
+                        if (hasAttributes) {
                             delta.attributes = attributes;
 
-                            Object.entries(attributes).forEach(([key, value]) => {
-                                if (value === null || value === '') {
-                                    delete vnode.attributes[key]
+                            for (key in attributes) {
+                                if (Object.hasOwn(attributes, key)) {
+                                    if (attributes[key] === null || attributes[key] === '') {
+                                        delete vnode.attributes[key]
+                                    }
                                 }
-                            })
+                            }
                         }
                         break
                     case 'nodeName':
-                    case 'innerHTML':
-                    case 'textContent':
+                    case 'scrollLeft':
+                    case 'scrollTop':
                         if (value !== oldVnode[prop]) {
                             delta[prop] = value
+                        }
+                        break
+                    case 'innerHTML':
+                        if (value !== oldVnode[prop]) {
+                            if (value === undefined) {
+                                // If innerHTML is removed, but we are setting textContent, skip the clear command.
+                                // Setting textContent natively wipes the DOM node's innerHTML.
+                                if (vnode.textContent !== undefined) {
+                                    break
+                                }
+                                // If both are genuinely removed, explicitly normalize to empty string.
+                                delta[prop] = ''
+                            } else {
+                                delta[prop] = value
+                            }
+                        }
+                        break
+                    case 'textContent':
+                        if (value !== oldVnode[prop]) {
+                            if (value === undefined) {
+                                // If textContent is removed, but we are setting innerHTML, skip the clear command.
+                                // Setting innerHTML natively wipes the DOM node's textContent.
+                                if (vnode.innerHTML !== undefined) {
+                                    break
+                                }
+                                // If both are genuinely removed, explicitly normalize to empty string.
+                                // Using innerHTML: '' is standard for clearing a node.
+                                delta.innerHTML = ''
+                            } else {
+                                delta[prop] = value
+                            }
                         }
                         break
                     case 'style':
@@ -145,7 +194,7 @@ class Helper extends Base {
                         }
                         break
                 }
-            });
+            }
 
             if (Object.keys(delta).length > 0) {
                 delta.id = vnode.id;
@@ -170,8 +219,9 @@ class Helper extends Base {
      * @returns {Object}
      */
     create(opts) {
-        let me     = this,
-            {util} = Neo.vdom,
+        let me               = this,
+            {util}           = Neo.vdom,
+            postMountUpdates = [],
             returnValue, vnode;
 
         vnode       = me.createVnode(opts.vdom);
@@ -184,7 +234,11 @@ class Helper extends Base {
                 throw new Error('VDom Helper render utilities are not loaded yet!')
             }
 
-            returnValue.outerHTML = util.StringFromVnode.create(vnode)
+            returnValue.outerHTML = util.StringFromVnode.create(vnode, null, postMountUpdates);
+
+            if (postMountUpdates.length > 0) {
+                returnValue.postMountUpdates = postMountUpdates
+            }
         }
 
         return returnValue
@@ -288,6 +342,11 @@ class Helper extends Base {
                 if (me.isMovedNode(childNode, oldVnodeMap)) {
                     me.moveNode({deltas, insertDelta, oldVnodeMap, vnode: childNode, vnodeMap})
                 } else {
+                    if (childNode.neoIgnore) {
+                        delete childNode.neoIgnore;
+                        continue
+                    }
+
                     me.insertNode({deltas, index: i + insertDelta, oldVnodeMap, vnode: childNode, vnodeMap})
                 }
 
@@ -320,86 +379,97 @@ class Helper extends Base {
 
         let me   = this,
             node = {attributes: {}, style: {}},
-            potentialNode;
+            key, value, potentialNode;
 
-        Object.entries(opts).forEach(([key, value]) => {
-            if (value !== undefined && value !== null && key !== 'flag' && key !== 'removeDom') {
-                let hasUnit, newValue, style;
+        for (key in opts) {
+            if (Object.hasOwn(opts, key)) {
+                value = opts[key];
 
-                switch (key) {
-                    case 'tag':
-                        node.nodeName = value;
-                        break
-                    case 'cls':
-                        node.className = value;
-                        break
-                    case 'html':
-                        node.innerHTML = value.toString(); // support for numbers
-                        break
-                    case 'text':
-                        node.textContent = value
-                        break
-                    case 'cn':
-                        if (!Array.isArray(value)) {
-                            value = [value]
-                        }
+                if (value !== undefined && value !== null && key !== 'flag' && key !== 'removeDom') {
+                    let hasUnit, newValue, style, i, len, item, dataKey;
 
-                        newValue = [];
+                    switch (key) {
+                        case 'tag':
+                            node.nodeName = value;
+                            break
+                        case 'cls':
+                            node.className = value;
+                            break
+                        case 'html':
+                            node.innerHTML = value.toString(); // support for numbers
+                            break
+                        case 'text':
+                            node.textContent = value
+                            break
+                        case 'cn':
+                            if (!Array.isArray(value)) {
+                                value = [value]
+                            }
 
-                        value.filter(Boolean).forEach(item => {
-                            if (item.removeDom !== true) {
-                                delete item.removeDom; // could be false
-                                potentialNode = me.createVnode(item);
+                            newValue = [];
 
-                                if (potentialNode) { // don't add null values
-                                    newValue.push(potentialNode)
+                            for (i = 0, len = value.length; i < len; i++) {
+                                item = value[i];
+                                if (item) {
+                                    if (item.removeDom !== true) {
+                                        delete item.removeDom; // could be false
+                                        potentialNode = me.createVnode(item);
+
+                                        if (potentialNode) { // don't add null values
+                                            newValue.push(potentialNode)
+                                        }
+                                    }
                                 }
                             }
-                        });
 
-                        node.childNodes = newValue;
-                        break
+                            node.childNodes = newValue;
+                            break
 
-                    case 'data':
-                        if (value && Neo.typeOf(value) === 'Object') {
-                            Object.entries(value).forEach(([key, val]) => {
-                                node.attributes[`data-${Neo.decamel(key)}`] = val
-                            })
-                        }
-                        break;
-                    case 'height':
-                    case 'maxHeight':
-                    case 'maxWidth':
-                    case 'minHeight':
-                    case 'minWidth':
-                    case 'width':
-                        if (rawDimensionTags.has(node.nodeName)) {
-                            node.attributes[key] = value + ''
-                        } else {
-                            hasUnit = value != parseInt(value);
-                            node.style[key] = value + (hasUnit ? '' : 'px')
-                        }
-                        break
-                    case 'componentId':
-                    case 'id':
-                    case 'static':
-                    case 'vtype':
-                        node[key] = value;
-                        break
-                    case 'style':
-                        style = node.style;
-                        if (Neo.isString(value)) {
-                            node.style = Object.assign(style, Neo.core.Util.createStyleObject(value))
-                        } else {
-                            node.style = Object.assign(style, value)
-                        }
-                        break
-                    default:
-                        node.attributes[key] = value + '';
-                        break
+                        case 'data':
+                            if (value && Neo.typeOf(value) === 'Object') {
+                                for (dataKey in value) {
+                                    if (Object.hasOwn(value, dataKey)) {
+                                        node.attributes[`data-${Neo.decamel(dataKey)}`] = value[dataKey]
+                                    }
+                                }
+                            }
+                            break;
+                        case 'height':
+                        case 'maxHeight':
+                        case 'maxWidth':
+                        case 'minHeight':
+                        case 'minWidth':
+                        case 'width':
+                            if (rawDimensionTags.has(node.nodeName)) {
+                                node.attributes[key] = value + ''
+                            } else {
+                                hasUnit = value != parseInt(value);
+                                node.style[key] = value + (hasUnit ? '' : 'px')
+                            }
+                            break
+                        case 'componentId':
+                        case 'id':
+                        case 'scrollLeft':
+                        case 'scrollTop':
+                        case 'static':
+                        case 'vtype':
+                            node[key] = value;
+                            break
+                        case 'style':
+                            style = node.style;
+                            if (Neo.isString(value)) {
+                                node.style = Object.assign(style, Neo.core.Util.createStyleObject(value))
+                            } else {
+                                node.style = Object.assign(style, value)
+                            }
+                            break
+                        default:
+                            node.attributes[key] = value + '';
+                            break
+                    }
                 }
             }
-        });
+        }
 
         // Relevant for vtype='text'
         if (Object.keys(node.attributes).length < 1) {
@@ -434,9 +504,12 @@ class Helper extends Base {
 
             map.set(id, {id, index, parentNode, vnode});
 
-            vnode.childNodes?.forEach((childNode, index) => {
-                this.createVnodeMap({index, map, parentNode: vnode, vnode: childNode})
-            })
+            let childNodes = vnode.childNodes;
+            if (childNodes) {
+                for (let i = 0, len = childNodes.length; i < len; i++) {
+                    this.createVnodeMap({index: i, map, parentNode: vnode, vnode: childNodes[i]})
+                }
+            }
         }
 
         return map
@@ -460,11 +533,14 @@ class Helper extends Base {
             if (this.isMovedNode(vnode, oldVnodeMap)) {
                 movedNodes.set(id, vnodeMap.get(id))
             } else {
-                vnode.childNodes?.forEach(childNode => {
-                    if (childNode.vtype !== 'text') {
-                        this.findMovedNodes({movedNodes, oldVnodeMap, vnode: childNode, vnodeMap})
+                let childNodes = vnode.childNodes;
+                if (childNodes) {
+                    for (let i = 0, len = childNodes.length; i < len; i++) {
+                        if (childNodes[i].vtype !== 'text') {
+                            this.findMovedNodes({movedNodes, oldVnodeMap, vnode: childNodes[i], vnodeMap})
+                        }
                     }
-                })
+                }
             }
         }
 
@@ -472,20 +548,67 @@ class Helper extends Base {
     }
 
     /**
-     * For delta updates to work, every node inside the live DOM needs a unique ID.
-     * Text nodes need to get wrapped into comment nodes, which contain the ID to ensure consistency.
-     * As the result, we need a physical index which counts every text node as 3 nodes.
+     * Recursive helper to count the physical nodes a fragment expands to.
+     *
+     * **Formula:** `2 (Start/End Anchors) + Sum(Child Physical Counts)`
+     *
+     * This method is essential for converting a "Logical Index" (where the fragment is 1 item)
+     * into a "Physical Index" (where the fragment is a range of N DOM nodes).
+     *
+     * @param {Neo.vdom.VNode} fragmentNode
+     * @returns {Number}
+     */
+    getFragmentPhysicalCount(fragmentNode) {
+        let count      = 2, // Start + End anchors
+            childNodes = fragmentNode.childNodes,
+            i          = 0,
+            len        = childNodes?.length || 0,
+            child;
+
+        for (; i < len; i++) {
+            child = childNodes[i];
+            if (child.vtype === 'text') {
+                count += 3
+            } else if (child.nodeName === 'fragment') {
+                count += this.getFragmentPhysicalCount(child)
+            } else {
+                count += 1
+            }
+        }
+
+        return count
+    }
+
+    /**
+     * Calculates the physical DOM index for a given logical child index.
+     *
+     * **The "Physical vs. Logical" Problem:**
+     * In the VDOM, a child list is simple: `[Div, Fragment, Span]`.
+     * In the real DOM, this expands to: `div`, `<!--frag-start-->`, `p`, `<!--frag-end-->`, `span`.
+     *
+     * This method iterates through the preceding siblings and sums up their "Physical Count":
+     * - Standard Element: 1
+     * - Text Node: 3 (`<!--text-->` + text + `<!--/text-->`)
+     * - Fragment: N (`2 + children`)
+     *
      * @param {Neo.vdom.VNode} parentNode
      * @param {Number}         logicalIndex
      * @returns {Number}
      */
     getPhysicalIndex(parentNode, logicalIndex) {
         let physicalIndex = logicalIndex,
-            i              = 0;
+            i             = 0,
+            child;
 
         for (; i < logicalIndex; i++) {
-            if (parentNode.childNodes[i]?.vtype === 'text') {
-                physicalIndex += 2 // Accounts for <!--neo-vtext--> wrappers
+            child = parentNode.childNodes[i];
+
+            if (child) {
+                if (child.vtype === 'text') {
+                    physicalIndex += 2 // Accounts for <!--neo-vtext--> wrappers
+                } else if (child.nodeName === 'fragment') {
+                    physicalIndex += (this.getFragmentPhysicalCount(child) - 1)
+                }
             }
         }
 
@@ -521,13 +644,11 @@ class Helper extends Base {
 
         let me = this;
 
-        if (!NeoConfig.unitTestMode) {
-            // Subscribe to global Neo.config changes for dynamic renderer switching.
-            Neo.currentWorker.on({
-                neoConfigChange: me.onNeoConfigChange,
-                scope          : me
-            })
-        }
+        // Subscribe to global Neo.config changes for dynamic renderer switching.
+        Neo.currentWorker?.on({
+            neoConfigChange: me.onNeoConfigChange,
+            scope          : me
+        });
 
         await me.importUtil()
     }
@@ -556,8 +677,14 @@ class Helper extends Base {
             // For direct DOM API mounting, pass the pruned VNode tree
             delta.vnode = Neo.vdom.util.DomApiVnodeCreator.create(vnode, movedNodes)
         } else {
+            let postMountUpdates = [];
+
             // For string-based mounting, pass a string excluding moved nodes
-            delta.outerHTML = Neo.vdom.util.StringFromVnode.create(vnode, movedNodes)
+            delta.outerHTML = Neo.vdom.util.StringFromVnode.create(vnode, movedNodes, postMountUpdates);
+
+            if (postMountUpdates.length > 0) {
+                delta.postMountUpdates = postMountUpdates
+            }
         }
 
         deltas.default.push(delta);
@@ -565,14 +692,14 @@ class Helper extends Base {
         // Insert the new node into the old tree, to simplify future OPs
         oldVnodeMap.get(parentId).vnode.childNodes.splice(index, 0, vnode);
 
-        movedNodes.forEach(details => {
+        for (let details of movedNodes.values()) {
             let {id}     = details,
                 parentId = details.parentNode.id;
 
             deltas.default.push({action: 'moveNode', id, index: details.index, parentId});
 
             me.createDeltas({deltas, oldVnode: oldVnodeMap.get(id).vnode, oldVnodeMap, vnode: details.vnode, vnodeMap})
-        })
+        }
     }
 
     /**
@@ -668,7 +795,7 @@ class Helper extends Base {
         let delta        = {action: 'removeNode', id: oldVnode.id},
             {parentNode} = oldVnodeMap.get(oldVnode.id);
 
-        if (oldVnode.vtype === 'text') {
+        if (oldVnode.vtype === 'text' || oldVnode.nodeName === 'fragment') {
             delta.parentId = parentNode.id
         }
 
@@ -708,6 +835,58 @@ class Helper extends Base {
         deltas = deltas.default.concat(deltas.remove);
 
         return {deltas, updateVdom: true, vnode}
+    }
+
+    /**
+     * Processes a map of updates sequentially and aggregates the results.
+     * This method is the core of the "Teleportation" / Disjoint Updates architecture.
+     * Instead of building a single bridged VDOM tree, we process multiple components
+     * as separate, disjoint updates in a single batch.
+     * 
+     * **Meta Payload Aggregation:**
+     * If individual component updates provide a `meta` object (see `Neo.mixin.VdomLifecycle#getVdomUpdatePayload`), 
+     * this method aggregates them into a single `meta` dictionary keyed by `componentId`. This allows 
+     * the VDOM worker to pass contextual App Worker state (like baseline `scrollTop` values) through 
+     * to the Main Thread's `DeltaUpdates` event listeners.
+     *
+     * @param {Object} data
+     * @param {Object} data.updates A map of update config objects: {componentId: updateOpts}
+     * @returns {Object} { deltas: Object[], meta: Object, vnodes: Object }
+     */
+    updateBatch(data) {
+        let me        = this,
+            allDeltas = [],
+            meta      = {},
+            vnodes    = {},
+            hasMeta   = false,
+            result, id, updateOpts;
+
+        for (id in data.updates) {
+            if (Object.hasOwn(data.updates, id)) {
+                updateOpts = data.updates[id];
+                result     = me.update(updateOpts);
+                
+                allDeltas.push(...result.deltas);
+                vnodes[id] = result.vnode;
+
+                if (updateOpts.meta) {
+                    meta[id] = updateOpts.meta;
+                    hasMeta  = true
+                }
+            }
+        }
+
+        let response = {
+            deltas    : allDeltas,
+            updateVdom: true,
+            vnodes
+        };
+
+        if (hasMeta) {
+            response.meta = meta
+        }
+
+        return response
     }
 }
 

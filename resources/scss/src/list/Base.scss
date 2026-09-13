@@ -6,6 +6,7 @@
 }
 
 .neo-list {
+    color-scheme        : var(--list-scrollbar-color-scheme, light);
     color               : var(--list-container-list-color);
     list-style-type     : none;
     margin-block-start  : 0;
@@ -31,9 +32,8 @@
     }
 
     &.neo-use-wrapper-node {
-        height  : 100%;
+        inset   : 0;
         position: absolute;
-        width   : 100%;
     }
 
     .neo-list-header {
@@ -77,5 +77,16 @@
         .neo-highlight-search {
             color: var(--list-item-highlight-search-color);
         }
+    }
+}
+
+/* list.plugin.Animate marks its owner with .neo-animated-list and drives item motion through a
+   per-owner #id transition rule. This single static override wins over that id-scoped rule via
+   !important, so vestibular-safe users get instant reflows from every animated list — inserted
+   here (not per-owner at runtime) because @media rules cannot be deleted by selectorText and a
+   dynamic copy would leak on every list destroy. */
+@media (prefers-reduced-motion: reduce) {
+    .neo-list.neo-animated-list .neo-list-item {
+        transition: none !important;
     }
 }

@@ -32,28 +32,199 @@ class BaseModel extends Model {
      * @member {String[]} dataFields
      */
     get dataFields() {
-        return this.view.parent.columns.items.map(column => column.dataField)
+        return this.view.gridContainer.columns.items.map(column => column.dataField)
+    }
+
+    /**
+     * Updates the visual state (selection class) of specific rows or cells without triggering a full Body update.
+     *
+     * This method implements the **Granular Update** strategy:
+     * 1.  It iterates over the provided items (logical cell IDs or record IDs).
+     * 2.  It resolves the corresponding `Neo.grid.Row` component.
+     * 3.  It inspects the **current VDOM state** of the target node (row or cell).
+     * 4.  It ONLY mutates the VDOM and triggers `row.update()` if the selection state has actually changed.
+     *
+     * This ensures O(1) performance for selection operations, regardless of grid size, and eliminates redundant VDOM traffic.
+     *
+     * @param {Object[]|String[]} items - Array of Record IDs (for RowModel) or Logical Cell IDs (for CellModel).
+     * @param {Boolean} [silent=false] - If true, mutates the VDOM but suppresses the `row.update()` call.
+     */
+    updateRows(items, silent=false) {
+        if (!items || items.length === 0) return;
+
+        if (!Array.isArray(items)) {
+            items = [items]
+        }
+
+        // The single View-owned model spans bodyStart/body/bodyEnd directly (no per-body model +
+        // getActivePeers() fan-out): each record/cell is toggled in every body that renders it.
+        this.view.bodies.forEach(body => this.updateBodyRows(body, items, silent))
+    }
+
+    /**
+     * Granular per-body selection-state update — the body-scoped half of {@link #updateRows}.
+     *
+     * Resolves each Record ID / Logical Cell ID to its `Neo.grid.Row` within the given body and
+     * toggles the selection class only when the state actually changed (O(1) VDOM traffic). The single
+     * View-owned model invokes this for each body, replacing the former per-body model fan-out.
+     *
+     * @param {Neo.grid.Body} body
+     * @param {Object[]|String[]} items - Array of Record IDs (RowModel) or Logical Cell IDs (CellModel).
+     * @param {Boolean} [silent=false] - If true, mutates the VDOM but suppresses the `row.update()` call.
+     */
+    updateBodyRows(body, items, silent=false) {
+        let me        = this,
+            {store}   = body,
+            processed = new Set();
+
+        items.forEach(item => {
+            let hasChanged = false,
+                isCell     = item.toString().includes('__'),
+                recordId, row;
+
+            if (isCell) {
+                // item is a logical ID: recordId__dataField
+                // We resolve the record to find the row.
+                let record = body.getRecordFromLogicalId(item);
+                if (record) {
+                    row = body.getRow(record);
+
+                    if (row && !processed.has(item)) {
+                        processed.add(item); // Process each logical cell only once per batch
+
+                        // Find the cell node in the row's VDOM
+                        let dataField     = body.getDataField(item),
+                            cellNode      = row.vdom.cn.find(n => n.data?.field === dataField),
+                            shouldSelect  = me.isSelected(item),
+                            alreadySelect = cellNode?.cls?.includes(me.selectedCls);
+
+                        if (cellNode && shouldSelect !== alreadySelect) {
+                            // Mutate VDOM directly: Toggle selection class
+                            NeoArray[shouldSelect ? 'add' : 'remove'](cellNode.cls, me.selectedCls);
+
+                            if (shouldSelect) {
+                                cellNode['aria-selected'] = true
+                            } else {
+                                delete cellNode['aria-selected']
+                            }
+
+                            hasChanged = true
+                        }
+
+                        // We must trigger the update on the row to flush the VDOM change
+                        if (hasChanged && !silent) {
+                            row.update()
+                        }
+                    }
+                }
+            } else {
+                // item is a recordId (RowModel)
+                recordId = item;
+
+                if (!processed.has(recordId)) {
+                    processed.add(recordId);
+                    let record = store.get(recordId);
+
+                    if (record) {
+                        row = body.getRow(record);
+
+                        if (row) {
+                            let isSelected    = me.isSelectedRow(recordId),
+                                alreadySelect = row.vdom.cls?.includes(me.selectedCls);
+
+                            if (isSelected !== alreadySelect) {
+                                // Mutate VDOM directly: Toggle selection class on the row
+                                NeoArray[isSelected ? 'add' : 'remove'](row.vdom.cls, me.selectedCls);
+
+                                if (isSelected) {
+                                    row.vdom['aria-selected'] = true
+                                } else {
+                                    delete row.vdom['aria-selected']
+                                }
+
+                                hasChanged = true
+                            }
+
+                            if (hasChanged && !silent) {
+                                row.update()
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /**
+     * @param {Object} item
+     * @param {Boolean} [silent] true to prevent a vdom update
+     * @param {Object[]|String[]} itemCollection=this.items
+     * @param {String} [selectedCls]
+     */
+    deselect(item, silent, itemCollection, selectedCls) {
+        let me = this;
+
+        me.view.silentSelect = true;
+        super.deselect(item, silent, itemCollection, selectedCls);
+        me.view.silentSelect = false;
+
+        if (!silent) {
+            me.updateRows(item);
+            me.getActivePeers().forEach(peer => peer.updateRows(item))
+        }
+    }
+
+    /**
+     * @param {Boolean} [silent] true to prevent a vdom update
+     * @param {Object[]|String[]} itemCollection=this.items
+     */
+    deselectAll(silent, itemCollection) {
+        let me    = this,
+            items = [...itemCollection || me.items]; // Capture items before they are removed
+
+        me.view.silentSelect = true;
+        super.deselectAll(silent, itemCollection);
+        me.view.silentSelect = false;
+
+        me.updateRows(items);
+        me.getActivePeers().forEach(peer => peer.updateRows(items, silent))
+    }
+
+    /**
+     * @param {Object|Object[]|String[]} items
+     * @param {Object[]|String[]} itemCollection=this.items
+     * @param {String} [selectedCls]
+     */
+    select(items, itemCollection, selectedCls) {
+        let me = this;
+
+        me.view.silentSelect = true;
+        super.select(items, itemCollection, selectedCls);
+        me.view.silentSelect = false;
+
+        me.updateRows(items);
+        me.getActivePeers().forEach(peer => peer.updateRows(items))
     }
 
     /**
      * @param {Boolean} [silent=false] true to prevent a vdom update
      */
     deselectAllRows(silent=false) {
-        let me     = this,
-            items  = [...me.selectedRows],
-            {view} = me;
+        let me    = this,
+            items = [...me.selectedRows];
 
         if (items.length) {
             items.forEach(item => {
                 me.deselectRow(item, true)
             });
 
-            if (!silent && items.length > 0) {
-                view.update()
+            if (!silent) {
+                me.updateRows(items);
+                me.getActivePeers().forEach(peer => peer.updateRows(items))
             }
 
             me.fire('selectionChange', {
-                records  : me.selectedRows.map(id => view.store.get(id)),
+                records  : me.selectedRows.map(id => me.view.store.get(id)),
                 selection: me.selectedRows
             })
         } else if (!silent) {
@@ -66,33 +237,43 @@ class BaseModel extends Model {
      * @param {Boolean}       [silent=false]
      */
     deselectRow(recordId, silent=false) {
-        let me      = this,
-            {view}  = me,
-            {store} = view,
-            record  = store.get(recordId),
-            rowId   = view.getRowId(store.indexOf(record)),
-            node    = view.getVdomChild(rowId);
+        let me = this;
 
-        if (node) {
-            node.cls = NeoArray.remove(node.cls || [], me.selectedCls);
-            delete node['aria-selected']
-        }
+        NeoArray.remove(me.selectedRows, recordId);
 
-        me.selectedRows = [recordId];
-
-        !silent && view.update()
+        me.updateRows(recordId, silent);
+        me.getActivePeers().forEach(peer => peer.updateRows(recordId, silent))
     }
 
     /**
-     * Get the record for a given event path
-     * @param {Object[]} path
+     * Retrieves sibling Selection Models in a Multi-Body environment.
+     * @returns {Neo.selection.grid.BaseModel[]}
+     */
+    getActivePeers() {
+        let me        = this,
+            container = me.view?.gridContainer,
+            peers     = [];
+
+        if (container) {
+            peers = [
+                container.bodyStart?.selectionModel,
+                container.body?.selectionModel,
+                container.bodyEnd?.selectionModel
+            ].filter(sm => sm && sm !== me)
+        }
+
+        return peers
+    }
+
+    /**
+     * @param {Object} path
      * @returns {Number|String|null}
      */
     getRecord(path) {
         let node, rowIndex;
 
         for (node of path) {
-            if (node.aria.rowindex) {
+            if (node.aria?.rowindex) {
                 rowIndex = parseInt(node.aria.rowindex);
 
                 // aria-rowindex is 1 based & also includes the header
@@ -100,6 +281,45 @@ class BaseModel extends Model {
 
                 return this.view.store.getAt(rowIndex)
             }
+        }
+
+        return null
+    }
+
+    /**
+     * Resolves a record from an ID (PK or internalId).
+     * @param {String|Number} id
+     * @returns {Neo.data.Record|null}
+     */
+    getRowRecord(id) {
+        if (!id) return null;
+
+        let me    = this,
+            {view} = me,
+            {store}= view,
+            record = store.get(id);
+
+        if (record) return record;
+
+        // Fast path: check visible rows across all bodies
+        for (let body of view.bodies) {
+            let row = body.items.find(r => r.record && body.getRecordId(r.record) === id);
+            if (row) return row.record
+        }
+
+        return null
+    }
+
+    /**
+     * @param {Number|String} recordId
+     * @returns {Neo.grid.Row|null}
+     */
+    getRowComponent(recordId) {
+        let me = this;
+
+        for (let body of me.view.bodies) {
+            let found = body.items.find(r => r.record && me.view.store.getKey(r.record) === recordId);
+            if (found) return found
         }
 
         return null
@@ -146,29 +366,29 @@ class BaseModel extends Model {
     }
 
     /**
+     * @param {Neo.component.Base} component
+     */
+    register(component) {
+        // grid.View registers as the single model's `view`; with one View-owned model there are no
+        // sibling per-body models to adopt state from (the former multi-body Peer State Adoption).
+        super.register(component)
+    }
+
+    /**
      * @param {Number|String} recordId
      * @param {Boolean}       [silent=false]
      */
     selectRow(recordId, silent=false) {
-        let me      = this,
-            {view}  = me,
-            {store} = view,
-            record  = store.get(recordId),
-            rowId   = view.getRowId(store.indexOf(record)),
-            node    = view.getVdomChild(rowId);
+        let me = this;
 
         if (me.singleSelect) {
-            me.deselectAllRows(true)
+            [...me.selectedRows].forEach(id => me.deselectRow(id))
         }
 
-        if (node) {
-            node.cls = NeoArray.add(node.cls || [], me.selectedCls);
-            node['aria-selected'] = true
-        }
+        NeoArray.add(me.selectedRows, recordId);
 
-        me.selectedRows = [recordId];
-
-        !silent && view.update()
+        me.updateRows(recordId, silent);
+        me.getActivePeers().forEach(peer => peer.updateRows(recordId, silent))
     }
 
     /**
@@ -180,6 +400,17 @@ class BaseModel extends Model {
     }
 
     /**
+     * @returns {Object}
+     */
+    toJSON() {
+        return {
+            ...super.toJSON(),
+            selectedColumns: this.selectedColumns,
+            selectedRows   : this.selectedRows
+        }
+    }
+
+    /**
      *
      */
     unregister() {
@@ -188,7 +419,7 @@ class BaseModel extends Model {
 
         me.selectedRows = [];
 
-        countRows > 0 && me.view.createViewData();
+        countRows > 0 && me.view.bodies.forEach(body => body.createViewData());
 
         super.unregister()
     }

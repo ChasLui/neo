@@ -15,7 +15,16 @@ class ListModel extends Model {
          * @member {String} ntype='selection-listmodel'
          * @protected
          */
-        ntype: 'selection-listmodel'
+        ntype: 'selection-listmodel',
+        /**
+         * True lets a click on an already-selected item deselect it — the removable-selection
+         * affordance a multi-select list needs (a multi-select whose selections are irrevocable
+         * is half a control). Only consulted while `singleSelect` is false: single-select keeps
+         * its click-reselects semantics untouched. Defaults to false, so every existing consumer
+         * keeps the shipped behavior unless it opts in.
+         * @member {Boolean} toggleOnClick=false
+         */
+        toggleOnClick: false
     }
 
     /**
@@ -57,14 +66,20 @@ class ListModel extends Model {
     /**
      * @param {Object} data
      */
-    onListClick({ currentTarget }) {
-        let {view} = this,
-            record;
+    onListClick({currentTarget}) {
+        let me     = this,
+            {view} = me,
+            id     = view.getItemRecordId(currentTarget),
+            record = view.store.get(id);
 
-        if (!view.disableSelection) {
-            record = view.store.get(view.getItemRecordId(currentTarget));
-
-            record && this.select(record)
+        if (!view.disableSelection && record) {
+            // isSelected() compares raw against the vdom-id collection, so the record maps through
+            // getSelectionItemId first — the same conversion select() and deselect() apply on entry.
+            if (!me.singleSelect && me.toggleOnClick && me.isSelected(me.getSelectionItemId(record))) {
+                me.deselect(record)
+            } else {
+                me.select(record)
+            }
         }
     }
 
@@ -73,10 +88,20 @@ class ListModel extends Model {
      */
     onListNavigate(data) {
         let {view}  = this,
-            {store} = view;
+            {store} = view,
+            record, recordId;
 
-        data.record      = store.getAt(Math.min(data.activeIndex, store.getCount()));
-        view._focusIndex = store.indexOf(data.record); // silent update, no need to refocus
+        if (data.activeItem) {
+            recordId = view.getItemRecordId(data.activeItem);
+            record   = store.get(recordId);
+        }
+
+        if (!record) {
+            record = store.getAt(Math.min(data.activeIndex, store.getCount()))
+        }
+
+        data.record      = record;
+        view._focusIndex = store.indexOf(record); // silent update, no need to refocus
 
         view.fire('itemNavigate', data)
     }
@@ -94,13 +119,18 @@ class ListModel extends Model {
             click: me.onListClick,
             scope: me,
 
-            // Should be `.${view.itemCls}:not(.neo-disabled,.neo-list-header)`
-            // TODO parse delegate selectors
+            // The class-name equivalent of `view.getNavigableItemSelector()`, which delegates cannot
+            // consume as a selector yet (TODO parse delegate selectors). Both read the same
+            // `nonInteractiveItemCls` config, so the two expressions of this rule cannot drift: a
+            // subclass adding a non-interactive concept is excluded from clicking and from arrow-key
+            // navigation by one declaration. Evaluated per event, so it always reflects the live value.
             delegate: path => {
+                const excluded = view.nonInteractiveItemCls;
+
                 for (let i = 0, { length } = path; i < length; i++) {
                     const { cls } = path[i];
 
-                    if (cls.includes(view.itemCls) && !cls.includes('neo-disabled') && !cls.includes('neo-list-header')) {
+                    if (cls.includes(view.itemCls) && !excluded.some(name => cls.includes(name))) {
                         return i;
                     }
                 }
@@ -124,9 +154,9 @@ class ListModel extends Model {
      * @param {Number} index
      */
     selectAt(index) {
-        let {view}    = this,
-            recordKey = view?.store.getKeyAt(index),
-            itemId    = recordKey && view.getItemId(recordKey);
+        let {view} = this,
+            record = view?.store.getAt(index),
+            itemId = record && view.getItemId(view.getRecordId(record));
 
         itemId && this.select(itemId)
     }

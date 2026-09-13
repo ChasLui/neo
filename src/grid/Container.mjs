@@ -1,17 +1,36 @@
-import BaseContainer     from '../container/Base.mjs';
-import ClassSystemUtil   from '../util/ClassSystem.mjs';
-import Collection        from '../collection/Base.mjs';
-import GridBody          from './Body.mjs';
-import ScrollManager     from './ScrollManager.mjs';
-import Store             from '../data/Store.mjs';
-import VerticalScrollbar from './VerticalScrollbar.mjs';
-import * as column       from './column/_export.mjs';
-import * as header       from './header/_export.mjs';
-import {isDescriptor}    from '../core/ConfigSymbols.mjs';
+import BaseContainer       from '../container/Base.mjs';
+import ClassSystemUtil     from '../util/ClassSystem.mjs';
+import Collection          from '../collection/Base.mjs';
+import GridBody            from './Body.mjs';
+import ScrollManager       from './ScrollManager.mjs';
+import Store               from '../data/Store.mjs';
+import FooterToolbar       from './footer/Toolbar.mjs';
+import HorizontalScrollbar from './HorizontalScrollbar.mjs';
+import NeoArray            from '../util/Array.mjs';
+import VerticalScrollbar   from './VerticalScrollbar.mjs';
+import View                from './View.mjs';
+import * as column         from './column/_export.mjs';
+import * as header         from './header/_export.mjs';
+import {isDescriptor}      from '../core/ConfigSymbols.mjs';
 
 /**
+ * @summary The main entry point for creating Data Grids in Neo.mjs.
+ *
+ * `Neo.grid.Container` orchestrates the entire Grid component. It uses a composite architecture consisting of:
+ * 1.  `headerToolbar` ({@link Neo.grid.header.Toolbar}): Manages column headers, sorting, and filtering UI.
+ * 2.  `body` ({@link Neo.grid.Body}): The scrollable area containing the data rows.
+ *
+ * Key features include:
+ * -   **Virtual Scrolling:** Only renders visible rows and columns (plus a small buffer) for high performance with large datasets.
+ * -   **Store Integration:** Binds directly to a {@link Neo.data.Store} for data management, sorting, and filtering.
+ * -   **Column Management:** Supports various column types (text, component, widget) via the `columns` config.
+ * -   **Multi-Threaded:** Logic runs in the App Worker, ensuring the UI stays responsive.
+ *
  * @class Neo.grid.Container
  * @extends Neo.container.Base
+ * @see Neo.grid.Body
+ * @see Neo.grid.Row
+ * @see Neo.data.Store
  */
 class GridContainer extends BaseContainer {
     /**
@@ -24,9 +43,17 @@ class GridContainer extends BaseContainer {
         animatedCurrency: column.AnimatedCurrency,
         column          : column.Base,
         component       : column.Component,
+        countryFlag     : column.CountryFlag,
         currency        : column.Currency,
+        githubOrgs      : column.GitHubOrgs,
+        githubUser      : column.GitHubUser,
+        icon            : column.Icon,
+        iconLink        : column.IconLink,
         index           : column.Index,
-        progress        : column.Progress
+        linkedin        : column.LinkedIn,
+        progress        : column.Progress,
+        sparkline       : column.Sparkline,
+        tree            : column.Tree
     }
     /**
      * @member {Object} delayable
@@ -64,6 +91,21 @@ class GridContainer extends BaseContainer {
             value         : null
         },
         /**
+         * @member {Neo.grid.Body|null} bodyEnd=null
+         * @protected
+         */
+        bodyEnd: null,
+        /**
+         * @member {Neo.grid.Body|null} bodyStart=null
+         * @protected
+         */
+        bodyStart: null,
+        /**
+         * @member {Neo.grid.View|null} view=null
+         * @protected
+         */
+        view: null,
+        /**
          * true uses grid.plugin.CellEditing
          * @member {Boolean} cellEditing_=false
          * @reactive
@@ -80,8 +122,18 @@ class GridContainer extends BaseContainer {
          */
         columns_: [],
         /**
+         * Configs for Neo.toolbar.Base
+         * @member {Object|null} [footerToolbar_={[isDescriptor]:true,merge:'deep',value:null}]
+         * @reactive
+         */
+        footerToolbar_: {
+            [isDescriptor]: true,
+            merge         : 'deep',
+            value         : null
+        },
+        /**
          * Configs for Neo.grid.header.Toolbar
-         * @member {Object|null} [headerToolbar_={[isDescriptor]: true, merge: 'deep', value: null}]
+         * @member {Object|null} [headerToolbar_={[isDescriptor]:true,merge:'deep',value:null}]
          * @reactive
          */
         headerToolbar_: {
@@ -90,26 +142,45 @@ class GridContainer extends BaseContainer {
             value         : null
         },
         /**
-         * @member {String} layout='base'
+         * @member {Neo.grid.header.Wrapper|null} headerWrapper=null
+         * @protected
+         */
+        headerWrapper: null,
+        /**
+         * @member {Neo.grid.HorizontalScrollbar|null} horizontalScrollbar=null
+         * @protected
+         */
+        horizontalScrollbar: null,
+        /**
+         * True enables hierarchical TreeGrid rendering and WAI-ARIA roles
+         * @member {Boolean} isTreeGrid_=false
          * @reactive
          */
-        layout: 'base',
+        isTreeGrid_: false,
+        /**
+         * @member {Object} layout={ntype: 'vbox', align: 'stretch'}
+         * @reactive
+         */
+        layout: {ntype: 'vbox', align: 'stretch'},
         /**
          * @member {String} role='grid'
          * @reactive
          */
         role: 'grid',
         /**
+         * Declarative width breakpoints for moving columns between locked regions.
+         * Breakpoint `columns` keys match a column `dataField` or `id`; values are
+         * `'start'`, `'end'`, `null`, or `false`.
+         * @member {Object|null} responsiveLockPolicy_=null
+         * @reactive
+         */
+        responsiveLockPolicy_: null,
+        /**
          * Number in px
          * @member {Number} rowHeight_=32
          * @reactive
          */
         rowHeight_: 32,
-        /**
-         * @member {Neo.grid.Scrollbar|null} scrollbar=null
-         * @protected
-         */
-        scrollbar: null,
         /**
          * @member {Boolean} showHeaderFilters_=false
          * @reactive
@@ -121,36 +192,74 @@ class GridContainer extends BaseContainer {
          */
         sortable_: true,
         /**
-         * @member {Neo.data.Store} store_=null
+         * The data source for the grid. This is the structural foundation for both flat Data Grids and hierarchical TreeGrids.
+         * The grid will automatically infer its `isTreeGrid` state based on whether this store is an instance of `Neo.data.TreeStore`.
+         * @member {Neo.data.Store|Neo.data.TreeStore|null} store_=null
          * @reactive
          */
         store_: null,
         /**
-         * @member {Array|null} items=null
-         * @protected
+         * @member {Boolean} useInternalId_=true
          * @reactive
          */
-        items: null,
+        useInternalId_: true,
+        /**
+         * Enable/disable the high-performance GridRowScrollPinning addon.
+         * @member {Boolean} useRowScrollPinning_=true
+         * @reactive
+         */
+        useRowScrollPinning_: true,
+        /**
+         * True enables restoring the initial sort state (ASC, DESC, null)
+         * @member {Boolean} useTriStateSorting_=false
+         * @reactive
+         */
+        useTriStateSorting_: false,
+        /**
+         * @member {Neo.grid.VerticalScrollbar|null} verticalScrollbar=null
+         * @protected
+         */
+        verticalScrollbar: null,
         /**
          * @member {Object} _vdom
          */
         _vdom:
-        {cls: ['neo-grid-wrapper'], cn: [
-            {'aria-colcount': 0, 'aria-rowcount': 1, cn: []} // aria-rowcount includes the column headers
-        ]}
+        {'aria-colcount': 0, 'aria-rowcount': 1, cn: []} // aria-rowcount includes the column headers
     }
 
     /**
-     * We do not need the first event to trigger logic, since afterSetMounted() handles this
-     * @member {Boolean} initialResizeEvent=true
+     * @member {Object[]|Neo.grid.column.Base[]} centerColumns=[]
      * @protected
      */
-    initialResizeEvent = true
+    centerColumns = []
+    /**
+     * @member {Object[]|Neo.grid.column.Base[]} lockedEndColumns=[]
+     * @protected
+     */
+    lockedEndColumns = []
+    /**
+     * @member {Object[]|Neo.grid.column.Base[]} lockedStartColumns=[]
+     * @protected
+     */
+    lockedStartColumns = []
     /**
      * @member {Neo.grid.ScrollManager|null} scrollManager=null
      * @protected
      */
     scrollManager = null
+    /**
+     * @member {Number|null} responsiveLockPolicyActiveMaxWidth=null
+     * @protected
+     */
+    responsiveLockPolicyActiveMaxWidth = null
+
+    /**
+     * @member {Boolean} hasLockedColumns=false
+     * @readonly
+     */
+    get hasLockedColumns() {
+        return this.columns?.items.some(col => col.locked === 'start' || col.locked === 'end') || false
+    }
 
     /**
      * @param {Object} config
@@ -158,26 +267,61 @@ class GridContainer extends BaseContainer {
     construct(config) {
         super.construct(config);
 
-        let me = this,
+        let me                                    = this,
             {appName, rowHeight, store, windowId} = me;
 
-        me.items = [me.headerToolbar, me.body];
+        me.items = me.items || [];
 
-        me.scrollbar = Neo.create({
+        me.headerWrapper = Neo.create(header.Wrapper, {
+            appName,
+            gridContainer: me,
+            parentId     : me.id,
+            theme        : me.theme,
+            windowId,
+            items        : [me.headerToolbar]
+        });
+
+        me.view = Neo.create(View, {
+            appName,
+            flex         : 1,
+            gridContainer: me,
+            isLoading    : me.isLoading,
+            parentId     : me.id,
+            theme        : me.theme,
+            windowId,
+            items        : [me.body]
+        });
+
+        me.horizontalScrollbar = Neo.create(HorizontalScrollbar, {
+            appName,
+            flex    : 'none',
+            parentId: me.id,
+            theme   : me.theme,
+            windowId
+        });
+
+        me.verticalScrollbar = Neo.create({
             module  : VerticalScrollbar,
             appName,
             parentId: me.id,
             rowHeight,
             store,
+            theme   : me.theme,
             windowId
         });
 
-        me.vdom.cn.push(me.scrollbar.createVdomReference())
+        me.items = [me.headerWrapper, me.view, me.horizontalScrollbar];
 
-        me.vdom.id = me.getWrapperId();
+        if (me.footerToolbar) {
+            me.items.push(me.footerToolbar)
+        }
+
+        me.items.push(me.verticalScrollbar);
 
         me._columns = me.createColumns(me.columns);
         me.updateColCount();
+
+        me.syncValueBandingFields();
 
         me.addDomListeners({
             resize: me.onResize,
@@ -186,6 +330,15 @@ class GridContainer extends BaseContainer {
     }
 
     /**
+     * @summary Observes, or stops observing, this grid's own box.
+     *
+     * `componentId` and `id` carry the same value here and are still both required: `id` is the DOM
+     * target the addon observes, while `componentId` is the App-Worker holder it refcounts. The
+     * addon unobserves a target only once its holder list is empty, and `unregister` removes exactly
+     * `data.componentId` — so a payload naming only `id` asks to remove an anonymous holder, leaves
+     * the real one in place, and releases nothing while looking like a teardown. `list.Buffered`
+     * carries the same contract.
+     *
      * @param {Boolean} mounted
      * @protected
      */
@@ -193,13 +346,12 @@ class GridContainer extends BaseContainer {
         let me             = this,
             {windowId}     = me,
             ResizeObserver = await Neo.currentWorker.getAddon('ResizeObserver', windowId),
-            resizeParams   = {id: me.id, windowId};
+            resizeParams   = {componentId: me.id, id: me.id, windowId};
 
         if (mounted) {
             ResizeObserver.register(resizeParams);
             await me.passSizeToBody()
         } else {
-            me.initialResizeEvent = true;
             ResizeObserver.unregister(resizeParams)
         }
     }
@@ -237,6 +389,8 @@ class GridContainer extends BaseContainer {
         let me              = this,
             {headerToolbar} = me;
 
+        me.syncValueBandingFields();
+
         // - If columns changed at run-time OR
         // - In case the `header.Toolbar#createItems()` method has run before columns where available
         if (oldValue?.count || (value?.count && headerToolbar?.isConstructed)) {
@@ -253,6 +407,46 @@ class GridContainer extends BaseContainer {
     }
 
     /**
+     * Triggered after the footerToolbar config got changed
+     * @param {Neo.toolbar.Base} value
+     * @param {Neo.toolbar.Base} oldValue
+     * @protected
+     */
+    afterSetFooterToolbar(value, oldValue) {
+        let me = this;
+
+        if (value && me.store && value.store !== me.store) {
+            value.store = me.store
+        }
+    }
+
+    /**
+     * Triggered after the isLoading config got changed
+     * @param {Boolean|String} value
+     * @param {Boolean|String} oldValue
+     * @protected
+     */
+    afterSetIsLoading(value, oldValue) {
+        let {view} = this;
+
+        if (view) {
+            view.isLoading = value;
+        }
+    }
+
+    /**
+     * Triggered after the isTreeGrid config got changed
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetIsTreeGrid(value, oldValue) {
+        let me = this;
+        me.getVdomRoot().role = value ? 'treegrid' : 'grid';
+        me.update();
+    }
+
+    /**
      * Triggered after the mounted config got changed
      * @param {Boolean} value
      * @param {Boolean} oldValue
@@ -260,7 +454,25 @@ class GridContainer extends BaseContainer {
      */
     afterSetMounted(value, oldValue) {
         super.afterSetMounted(value, oldValue);
-        oldValue !== undefined && this.addResizeObserver(value)
+        oldValue !== undefined && this.addResizeObserver(value);
+
+        let {scrollManager} = this;
+
+        if (scrollManager) {
+            scrollManager.mounted = value
+        }
+    }
+
+    /**
+     * Triggered after the responsiveLockPolicy config got changed.
+     * @param {Object|null} value
+     * @param {Object|null} oldValue
+     * @protected
+     */
+    afterSetResponsiveLockPolicy(value, oldValue) {
+        if (oldValue !== undefined) {
+            this.responsiveLockPolicyActiveMaxWidth = null
+        }
     }
 
     /**
@@ -271,15 +483,11 @@ class GridContainer extends BaseContainer {
      */
     afterSetRowHeight(value, oldValue) {
         if (value > 0) {
-            let {body, scrollbar} = this;
+            let {body, bodyEnd, bodyStart} = this;
 
-            if (scrollbar) {
-                scrollbar.rowHeight = value
-            }
-
-            if (body) {
-                body.rowHeight = value
-            }
+            if (body)      body.rowHeight = value;
+            if (bodyStart) bodyStart.rowHeight = value;
+            if (bodyEnd)   bodyEnd.rowHeight = value;
         }
     }
 
@@ -308,9 +516,22 @@ class GridContainer extends BaseContainer {
     }
 
     /**
-     * Triggered after the store config got changed
-     * @param {Number} value
-     * @param {Number} oldValue
+     * Triggered after the useTriStateSorting config got changed
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetUseTriStateSorting(value, oldValue) {
+        if (oldValue !== undefined) {
+            this.headerToolbar.useTriStateSorting = value
+        }
+    }
+
+    /**
+     * Triggered after the store config got changed.
+     * Automatically infers the `isTreeGrid` state based on the store's type.
+     * @param {Neo.data.Store|Neo.data.TreeStore|null} value
+     * @param {Neo.data.Store|Neo.data.TreeStore|null} oldValue
      * @protected
      */
     afterSetStore(value, oldValue) {
@@ -321,12 +542,92 @@ class GridContainer extends BaseContainer {
                 scope : me
             };
 
-        value   ?.on(listeners);
-        oldValue?.un(listeners);
+        me.isTreeGrid = value?.isTreeStore === true;
 
-        // in case we dynamically change the store, grid.Body needs to get the new reference
-        if (me.body) {
-            me.body.store = value
+        // on() and un() both consume (delete) keys like `scope` from the passed object,
+        // so each call needs its own copy — a shared object breaks the second call silently.
+        value   ?.on({...listeners});
+        oldValue?.un({...listeners});
+
+        // in case we dynamically change the store (incl. a state.Provider store binding resolving
+        // after construction), grid.Body + the scrollbar need to get the new reference
+        if (me.body)              me.body.store = value;
+        if (me.bodyStart)         me.bodyStart.store = value;
+        if (me.bodyEnd)           me.bodyEnd.store = value
+        if (me.verticalScrollbar) me.verticalScrollbar.store = value
+
+        if (me.footerToolbar && me.footerToolbar.store !== value) {
+            me.footerToolbar.store = value
+        }
+
+        me.syncValueBandingFields()
+    }
+
+    /**
+     * Triggered after the useInternalId config got changed
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetUseInternalId(value, oldValue) {
+        if (oldValue !== undefined) {
+            if (this.body)      this.body.useInternalId = value;
+            if (this.bodyStart) this.bodyStart.useInternalId = value;
+            if (this.bodyEnd)   this.bodyEnd.useInternalId = value;
+        }
+    }
+
+    /**
+     * Scans all columns for useValueBanding:true and applies the mapped fields to the store
+     * @protected
+     */
+    syncValueBandingFields() {
+        let me      = this,
+            columns = me.columns?.items,
+            store   = me.store,
+            fields  = [];
+
+        if (columns && store) {
+            columns.forEach(column => {
+                if (column.useValueBanding) {
+                    fields.push(column.dataField)
+                }
+            });
+
+            store.valueBandingFields = fields
+        }
+    }
+
+    /**
+     * Triggered after the useRowScrollPinning config got changed
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetUseRowScrollPinning(value, oldValue) {
+        if (oldValue !== undefined && this.scrollManager) {
+            this.scrollManager.rowScrollPinning = value
+        }
+    }
+
+    /**
+     * @summary Keeps the ScrollManager realm aligned on initial attachment and later window transfers.
+     *
+     * Grids can be constructed while detached, so their first real `windowId` transition is
+     * `null` → id. Forwarding only when `oldValue` was truthy left the ScrollManager permanently
+     * windowless and routed its main-thread addon registrations through the first-port fallback.
+     * Triggered after the windowId config got changed
+     * @param {String|null} value
+     * @param {String|null} oldValue
+     * @protected
+     */
+    afterSetWindowId(value, oldValue) {
+        super.afterSetWindowId(value, oldValue);
+
+        let {scrollManager} = this;
+
+        if (scrollManager) {
+            scrollManager.windowId = value
         }
     }
 
@@ -343,7 +644,9 @@ class GridContainer extends BaseContainer {
             flex         : 1,
             gridContainer: me,
             parentId     : me.id,
-            store        : me.store
+            store        : me.store,
+            theme        : me.theme,
+            useInternalId: me.useInternalId
         })
     }
 
@@ -362,18 +665,42 @@ class GridContainer extends BaseContainer {
     }
 
     /**
+     * Triggered before.footerToolbar config gets changed.
+     * @param {Object|Neo.toolbar.Base|null} value
+     * @param {Object|Neo.toolbar.Base|null} oldValue
+     * @returns {Neo.toolbar.Base|null}
+     * @protected
+     */
+    beforeSetFooterToolbar(value, oldValue) {
+        if (!value) return null;
+
+        const me = this;
+
+        return ClassSystemUtil.beforeSetInstance(value, FooterToolbar, {
+            flex    : 'none',
+            parentId: me.id,
+            theme   : me.theme
+        })
+    }
+
+    /**
      * Triggered before the headerToolbar config gets changed.
      * @param {Object|Neo.grid.header.Toolbar|null} value
      * @param {Object|Neo.grid.header.Toolbar|null} oldValue
+     * @returns {Neo.toolbar.Base|null}
      * @protected
      */
     beforeSetHeaderToolbar(value, oldValue) {
         const me = this;
 
         return ClassSystemUtil.beforeSetInstance(value, header.Toolbar, {
-            parentId         : me.id,
-            showHeaderFilters: me.showHeaderFilters,
-            sortable         : me.sortable
+            flex              : 1,
+            gridContainer     : me,
+            parentId          : me.id,
+            showHeaderFilters : me.showHeaderFilters,
+            sortable          : me.sortable,
+            theme             : me.theme,
+            useTriStateSorting: me.useTriStateSorting
         })
     }
 
@@ -404,9 +731,9 @@ class GridContainer extends BaseContainer {
         if (body) {
             body.silentVdomUpdate = true;
 
-            records.forEach(item => {
-                store.get(item[keyProperty])?.set(item)
-            });
+            for (let i = 0, len = records.length; i < len; i++) {
+                store.get(records[i][keyProperty])?.set(records[i])
+            }
 
             body.silentVdomUpdate = false;
 
@@ -419,61 +746,291 @@ class GridContainer extends BaseContainer {
      * @returns {*}
      */
     createColumns(columns) {
-        let me               = this,
-            {columnDefaults} = me,
-            headerButtons    = [],
-            sorters          = me.store?.sorters,
-            columnClass, renderer;
+        let me                 = this,
+            {columnDefaults}   = me,
+            centerButtons      = [],
+            lockedEndButtons   = [],
+            lockedStartButtons = [],
+            sorters            = me.store?.sorters,
+            buttonConfig, columnClass, renderer;
 
-        columns?.forEach((column, index) => {
-            renderer = column.renderer;
-
-            columnDefaults && Neo.assignDefaults(column, columnDefaults);
-
-            if (renderer && Neo.isString(renderer) && me[renderer]) {
-                column.renderer = me[renderer]
+        if (columns) {
+            if (columnDefaults) {
+                columns.forEach(column => Neo.assignDefaults(column, columnDefaults))
             }
 
-            if (sorters?.[0] && column.dataField === sorters[0].property) {
-                column.isSorted = sorters[0].direction
+            columns = me.sortColumns(columns);
+
+            for (let index = 0, len = columns.length; index < len; index++) {
+                let column = columns[index];
+                renderer = column.renderer;
+
+                if (renderer && Neo.isString(renderer) && me[renderer]) {
+                    column.renderer = me[renderer]
+                }
+
+                if (sorters?.[0] && column.dataField === sorters[0].property) {
+                    column.isSorted = sorters[0].direction
+                }
+
+                column.listeners = {
+                    sort : me.onSortColumn,
+                    scope: me
+                };
+
+                buttonConfig = {...column};
+
+                if (column.locked === 'start') {
+                    lockedStartButtons.push(buttonConfig);
+                } else if (column.locked === 'end') {
+                    lockedEndButtons.push(buttonConfig);
+                } else {
+                    centerButtons.push(buttonConfig);
+                }
+
+                if (column.component && !column.type) {
+                    column.type = 'component'
+                }
+
+                columnClass = me.constructor.columnTypes[column.type || 'column'];
+                delete column.type;
+
+                columns[index] = Neo.create(columnClass, {
+                    parent  : me,
+                    windowId: me.windowId,
+                    ...column
+                })
             }
-
-            column.listeners = {
-                sort : me.onSortColumn,
-                scope: me
-            };
-
-            headerButtons.push(column);
-
-            if (column.component && !column.type) {
-                column.type = 'component'
-            }
-
-            columnClass = me.constructor.columnTypes[column.type || 'column'];
-            delete column.type;
-
-            columns[index] = Neo.create(columnClass, {
-                parent  : me,
-                windowId: me.windowId,
-                ...column
-            })
-        });
-
-        me.headerToolbar.items = headerButtons;
-        me.headerToolbar.createItems();
+        }
 
         if (Neo.typeOf(me._columns) === 'NeoInstance') {
             me._columns.clear();
             me._columns.add(columns);
 
+            me.lockedStartColumns = columns.filter(c => c.locked === 'start');
+            me.centerColumns      = columns.filter(c => !c.locked);
+            me.lockedEndColumns   = columns.filter(c => c.locked === 'end');
+
+            me.createOrUpdateSubGrids(lockedStartButtons, centerButtons, lockedEndButtons);
+
             return me._columns
         }
+
+        me.lockedStartColumns = columns.filter(c => c.locked === 'start');
+        me.centerColumns      = columns.filter(c => !c.locked);
+        me.lockedEndColumns   = columns.filter(c => c.locked === 'end');
+
+        me.createOrUpdateSubGrids(lockedStartButtons, centerButtons, lockedEndButtons);
 
         return Neo.create(Collection, {
             keyProperty: 'dataField',
             items      : columns,
             listeners  : {mutate: me.onColumnsMutate, scope: me}
         })
+    }
+
+    /**
+     * @param {Object[]} [lockedStartButtons]
+     * @param {Object[]} [centerButtons]
+     * @param {Object[]} [lockedEndButtons]
+     * @protected
+     */
+    createOrUpdateSubGrids(lockedStartButtons, centerButtons, lockedEndButtons) {
+        let me = this;
+
+        // The header region (locked + centre toolbars) is owned by the dedicated header.Wrapper orchestrator.
+        me.headerWrapper.updateHeaders(lockedStartButtons, centerButtons, lockedEndButtons);
+
+        // --- Start body (Left) ---
+        if (me.lockedStartColumns.length > 0) {
+            if (!me.bodyStart) {
+                me.bodyStart = Neo.create(GridBody, {
+                    ...me.body.initialConfig,
+                    selectionModel: null, // grid.View owns the single model; locked bodies must not clone it
+                    flex          : 'none',
+                    gridContainer : me,
+                    parentId      : me.view.id,
+                    rowHeight     : me.rowHeight,
+                    store         : me.store,
+                    theme         : me.theme,
+                    useInternalId : me.useInternalId,
+                    windowId      : me.windowId
+                })
+            }
+        } else if (me.bodyStart) {
+            me.bodyStart.destroy();
+            me.bodyStart = null;
+
+            // The margin feed lives in Body#afterSetAvailableWidth; a destroyed region must
+            // release its scrollbar-scrollport margin explicitly.
+            me.horizontalScrollbar && (me.horizontalScrollbar.startWidth = 0)
+        }
+
+        // --- End body (Right) ---
+        if (me.lockedEndColumns.length > 0) {
+            if (!me.bodyEnd) {
+                me.bodyEnd = Neo.create(GridBody, {
+                    ...me.body.initialConfig,
+                    selectionModel: null, // grid.View owns the single model; locked bodies must not clone it
+                    flex          : 'none',
+                    gridContainer : me,
+                    parentId      : me.view.id,
+                    rowHeight     : me.rowHeight,
+                    store         : me.store,
+                    theme         : me.theme,
+                    useInternalId : me.useInternalId,
+                    windowId      : me.windowId
+                })
+            }
+        } else if (me.bodyEnd) {
+            me.bodyEnd.destroy();
+            me.bodyEnd = null;
+
+            // See the bodyStart branch: release the scrollport margin of a removed region.
+            me.horizontalScrollbar && (me.horizontalScrollbar.endWidth = 0)
+        }
+
+        // Synchronize the body sub-grids into the grid.View.
+        let bodyItems = [];
+
+        me.bodyStart && bodyItems.push(me.bodyStart);
+        me.body      && bodyItems.push(me.body);
+        me.bodyEnd   && bodyItems.push(me.bodyEnd);
+
+        me.view.items = bodyItems;
+
+        // Single View-owned SelectionModel: hoist the center body's model up to grid.View and share
+        // the one instance to all bodies BEFORE they render (no per-body clones, no transient models).
+        me.applyViewSelectionModel(me.view.selectionModel || me.body?.selectionModel);
+
+        // Header assembly is owned by header.Wrapper.updateHeaders(); only the bodies render here.
+        me.view.createItems()
+    }
+
+    /**
+     * Establishes the single View-owned SelectionModel: registers it on grid.View (the body
+     * orchestrator) and shares the one instance to every body as a render/event delegate, so locked
+     * bodies never carry independent cloned models. Identity-guarded (idempotent + re-entrant-safe);
+     * invoked on sub-grid (re)creation and on any dynamic `body.selectionModel` swap.
+     * @param {Neo.selection.grid.BaseModel|null} model
+     * @protected
+     */
+    applyViewSelectionModel(model) {
+        let me = this;
+
+        // Re-entrancy guard: sharing the model to a body fires Body.afterSetSelectionModel, which calls
+        // back here. Without this flag the callbacks re-add the `selectionModel` config during a body's
+        // processConfigs and recurse infinitely.
+        if (!model || !me.view || me.applyingViewSelectionModel) return;
+
+        me.applyingViewSelectionModel = true;
+
+        me.view.selectionModel      !== model && (me.view.selectionModel      = model);
+        me.body      && me.body.selectionModel      !== model && (me.body.selectionModel      = model);
+        me.bodyStart && me.bodyStart.selectionModel !== model && (me.bodyStart.selectionModel = model);
+        me.bodyEnd   && me.bodyEnd.selectionModel   !== model && (me.bodyEnd.selectionModel   = model);
+
+        me.applyingViewSelectionModel = false
+    }
+
+    /**
+     * Applies the first matching responsive locked-column breakpoint.
+     * @param {Object|Number} data Resize payload or measured width
+     * @returns {Boolean} true when at least one column lock state changed
+     */
+    applyResponsiveLockPolicy(data) {
+        let me          = this,
+            policy      = me.responsiveLockPolicy,
+            width       = me.resolveResponsiveLockPolicyWidth(data),
+            breakpoints = me.getResponsiveLockPolicyBreakpoints(policy),
+            changed     = false;
+
+        if (!width || breakpoints.length === 0) {
+            return false
+        }
+
+        let hysteresis = Math.max(0, Number(policy.hysteresis) || 0),
+            breakpoint = me.getResponsiveLockPolicyBreakpoint(width, breakpoints, hysteresis),
+            columns    = breakpoint?.columns;
+
+        me.responsiveLockPolicyActiveMaxWidth = breakpoint?.maxWidth ?? null;
+
+        if (!columns) {
+            return false
+        }
+
+        for (let key in columns) {
+            let column = me.getResponsiveLockPolicyColumn(key),
+                locked = me.normalizeResponsiveLockValue(columns[key]);
+
+            if (column && locked !== undefined && column.locked !== locked) {
+                column.locked = locked;
+                changed       = true
+            }
+        }
+
+        return changed
+    }
+
+    /**
+     * @param {Object|null} policy
+     * @returns {Object[]}
+     * @protected
+     */
+    getResponsiveLockPolicyBreakpoints(policy) {
+        let breakpoints = policy?.breakpoints;
+
+        if (!Array.isArray(breakpoints)) {
+            return []
+        }
+
+        return breakpoints
+            .map(breakpoint => {
+                let maxWidth = Number(breakpoint?.maxWidth);
+
+                return {
+                    ...breakpoint,
+                    maxWidth
+                }
+            })
+            .filter(breakpoint =>
+                Number.isFinite(breakpoint.maxWidth) &&
+                breakpoint.maxWidth > 0 &&
+                breakpoint.columns &&
+                Neo.typeOf(breakpoint.columns) === 'Object'
+            )
+            .sort((a, b) => a.maxWidth - b.maxWidth)
+    }
+
+    /**
+     * @param {Number} width
+     * @param {Object[]} breakpoints
+     * @param {Number} hysteresis
+     * @returns {Object|null}
+     * @protected
+     */
+    getResponsiveLockPolicyBreakpoint(width, breakpoints, hysteresis) {
+        let me             = this,
+            activeMaxWidth = me.responsiveLockPolicyActiveMaxWidth,
+            active         = breakpoints.find(breakpoint => breakpoint.maxWidth === activeMaxWidth),
+            candidate      = breakpoints.find(breakpoint => width <= breakpoint.maxWidth) || null;
+
+        if (active && (!candidate || candidate.maxWidth > active.maxWidth) && width <= active.maxWidth + hysteresis) {
+            return active
+        }
+
+        return candidate
+    }
+
+    /**
+     * @param {String} key
+     * @returns {Neo.grid.column.Base|null}
+     * @protected
+     */
+    getResponsiveLockPolicyColumn(key) {
+        let {columns} = this;
+
+        return columns?.get(key) || columns?.items.find(column => column.id === key || column.dataField === key) || null
     }
 
     /**
@@ -484,44 +1041,131 @@ class GridContainer extends BaseContainer {
 
         me.store = null; // remove the listeners
 
+        me.verticalScrollbar?.destroy();
         me.scrollManager.destroy();
 
+        // `componentId` names the holder to drop; without it the addon removes nothing and the
+        // native observer outlives this grid. See addResizeObserver().
         me.mounted && Neo.main.addon.ResizeObserver.unregister({
-            id      : me.id,
-            windowId: me.windowId
+            componentId: me.id,
+            id         : me.id,
+            windowId   : me.windowId
         });
 
         super.destroy(...args)
     }
 
     /**
-     * @override
-     * @returns {*}
+     * Triggered by `grid.column.Base#afterSetLocked`
+     * Re-sorts the internal columns collection, the header items, and triggers a layout refresh.
+     * @param {Neo.grid.column.Base} column
      */
-    getVdomRoot() {
-        return this.vdom.cn[0]
+    async onColumnLockChange(column) {
+        let me            = this,
+            columnsArray  = [...me.columns.items],
+            sortedColumns = me.sortColumns(columnsArray);
+
+        // Sync the Collection
+        // clearSilent() and add() is the safest way to reset internal indices.
+        // add() is NON-silent: it fires the collection's mutate event, which IS this container's
+        // registered onColumnsMutate listener — the sub-grid layout sync runs exactly once through
+        // that path. An additional explicit onColumnsMutate() call here would run the rebuild
+        // twice in the same tick: two racing `view.items` assignments diff against a stale vnode
+        // and insert duplicate region-body DOM nodes (the second copy renders the same columns
+        // beside the first — "duplicated columns" after a cross-region drop).
+        me.columns.clearSilent();
+        me.columns.add(sortedColumns);
+
+        // onColumnsMutate re-homed the header buttons across the region toolbars; each region's
+        // body still holds the columnPositions / availableWidth of its OLD membership. Rebuild
+        // them from the new toolbar memberships before re-rendering the rows, or the gaining
+        // region renders without the column and the losing region keeps a hidden ghost position.
+        let {headerWrapper} = me,
+            toolbars        = [headerWrapper.headerStart, me.headerToolbar, headerWrapper.headerEnd].filter(Boolean);
+
+        await Promise.all(toolbars.map(toolbar => toolbar.passSizeToBody()));
+
+        // Force a full row re-render to apply the new column order and styles
+        if (me.body)      me.body.createViewData();
+        if (me.bodyStart) me.bodyStart.createViewData();
+        if (me.bodyEnd)   me.bodyEnd.createViewData();
+
     }
 
     /**
-     * @override
-     * @returns {Neo.vdom.VNode}
+     * @param {Object[]|Neo.grid.column.Base[]} columns
+     * @returns {Object[]|Neo.grid.column.Base[]}
      */
-    getVnodeRoot() {
-        return this.vnode.childNodes[0]
+    sortColumns(columns) {
+        let lockedEnd   = [],
+            lockedStart = [],
+            unlocked    = [];
+
+        for (let i = 0, len = columns.length; i < len; i++) {
+            let column = columns[i];
+
+            if (column.locked === 'start') {
+                lockedStart.push(column)
+            } else if (column.locked === 'end') {
+                lockedEnd.push(column)
+            } else {
+                unlocked.push(column)
+            }
+        }
+
+        return [...lockedStart, ...unlocked, ...lockedEnd]
+    }
+
+
+    /**
+     * @param {String} dataField
+     * @returns {Neo.grid.header.Button|null}
+     * @protected
+     */
+    getButton(dataField) {
+        return this.headerWrapper.getButton(dataField)
     }
 
     /**
-     * @returns {String}
+     * Recomputes the region-grouped column arrays from the global `columns` collection. These
+     * arrays are the engine's region+index oracle — they must refresh on EVERY column-order
+     * mutation, including within-region drag reorders, which mutate the collection via
+     * `columns.move()` (event-silent: no `mutate` fires, so `onColumnsMutate` alone cannot
+     * keep them fresh).
+     * @protected
      */
-    getWrapperId() {
-        return `${this.id}__wrapper`
+    refreshRegionColumns() {
+        let me = this;
+
+        me.lockedStartColumns = me._columns.items.filter(c => c.locked === 'start');
+        me.centerColumns      = me._columns.items.filter(c => !c.locked);
+        me.lockedEndColumns   = me._columns.items.filter(c => c.locked === 'end')
     }
 
     /**
      * @param {Object} data
      */
     onColumnsMutate(data) {
-        this.updateColCount()
+        let me = this;
+
+        me.refreshRegionColumns();
+
+        me.createOrUpdateSubGrids();
+
+        // Split bodies created here (bodyStart/bodyEnd) aren't covered by the resize-driven
+        // measurement, so without this their containerWidth/columnPositions stay unset and
+        // Body.createViewData short-circuits to an empty body. Mirror the onResize sequence:
+        // measure the container, then (once the width is known) re-derive each body's mounted
+        // and visible columns so createViewData can render their rows.
+        me.passSizeToBody().then(() => {
+            me.bodyStart?.updateMountedAndVisibleColumns();
+            me.body.updateMountedAndVisibleColumns();
+            me.bodyEnd?.updateMountedAndVisibleColumns()
+        });
+
+        me.headerWrapper.applyColumnButtonOrder(me.lockedStartColumns, me.centerColumns, me.lockedEndColumns);
+
+        me.updateColCount()
     }
 
     /**
@@ -533,28 +1177,61 @@ class GridContainer extends BaseContainer {
         let me = this;
 
         me.scrollManager = Neo.create({
-            gridBody     : me.body,
-            module       : ScrollManager,
-            gridContainer: me
+            gridBody        : me.body,
+            module          : ScrollManager,
+            gridContainer   : me,
+            rowScrollPinning: me.useRowScrollPinning,
+            windowId        : me.windowId
         })
     }
 
     /**
+     * @summary Re-derives worker grid geometry from every ResizeObserver delivery.
+     *
+     * Deliberately NO first-delivery skip: a skip flag assumes the register-time echo after a
+     * (re)mount always arrives, but that echo can lose its routing race — the flag then consumes
+     * the first REAL resize (a committed dock re-layout can land before the echo), freezing
+     * `containerWidth` at the stale mount-time value until an unrelated resize repairs it.
+     * Size-equivalence classification is no safer: any tolerance swallows a real sub-tolerance
+     * resize. Re-processing the echo is idempotent (a silent set of identical values), so
+     * correctness costs one redundant measurement per mount.
      * @param {Object} data
+     * @param {Object} [data.borderBoxSize]
      * @returns {Promise<void>}
      */
     async onResize(data) {
         let me = this;
 
-        if (!me.initialResizeEvent) {
-            await me.passSizeToBody(true);
+        me.applyResponsiveLockPolicy(data);
 
-            me.body.updateMountedAndVisibleColumns();
+        await me.passSizeToBody(true);
 
-            await me.headerToolbar.passSizeToBody()
-        } else {
-            me.initialResizeEvent = false
+        me.bodyStart?.updateMountedAndVisibleColumns();
+        me.body.updateMountedAndVisibleColumns();
+        me.bodyEnd?.updateMountedAndVisibleColumns();
+
+        await me.headerToolbar.passSizeToBody()
+    }
+
+    /**
+     * @param {*} value
+     * @returns {String|null|undefined}
+     * @protected
+     */
+    normalizeResponsiveLockValue(value) {
+        if (value === false || value === null) {
+            return null
         }
+
+        return value === 'start' || value === 'end' ? value : undefined
+    }
+
+    /**
+     * @param {Object} data
+     */
+    onScrollCapture(data) {
+        super.onScrollCapture(data);
+        this.scrollManager.onContainerScroll(data)
     }
 
     /**
@@ -567,8 +1244,7 @@ class GridContainer extends BaseContainer {
         let me = this;
 
         me.store.sort(opts);
-        me.removeSortingCss(opts.property);
-        opts.direction && me.body.onStoreLoad({items: me.store.items});
+        me.removeSortingCss(opts.property)
     }
 
     /**
@@ -596,23 +1272,60 @@ class GridContainer extends BaseContainer {
     }
 
     /**
+     * @summary Measures the container chrome and passes the derived body size downstream.
+     *
+     * Reads LAYOUT-box metrics (`getLayoutRect()`), never `getBoundingClientRect()`: this async
+     * measurement races presentation windows (a committed dock resize triggers it while DockFlip
+     * still scale-transforms the pane), and visual rects sampled mid-motion would persist as
+     * poisoned `containerWidth`/`availableHeight` until an unrelated resize.
      * @param {Boolean} silent=false
      * @returns {Promise<void>}
      */
     async passSizeToBody(silent=false) {
-        let me                          = this,
-            [containerRect, headerRect] = await me.getDomRect([me.id, me.headerToolbar.id]);
+        let me                             = this,
+            {footerToolbar, headerToolbar} = me,
+            domRects                       = [me.id, headerToolbar.id],
+            containerRect, footerRect, headerRect;
+
+        if (footerToolbar) {
+            domRects.push(footerToolbar.id)
+        }
+
+        [containerRect, headerRect, footerRect] = await me.getLayoutRect(domRects);
 
         // delay for slow connections, where the container-sizing is not done yet
         if (containerRect.height === headerRect.height) {
             await me.timeout(100);
             await me.passSizeToBody(silent)
         } else {
-            me.body[silent ? 'setSilent' : 'set']({
-                availableHeight: containerRect.height - headerRect.height,
+            let config = {
+                availableHeight: containerRect.height - headerRect.height - (footerRect?.height || 0),
                 containerWidth : containerRect.width
-            })
+            };
+
+            me.body[silent ? 'setSilent' : 'set'](config);
+            me.bodyStart && me.bodyStart[silent ? 'setSilent' : 'set'](config);
+            me.bodyEnd   && me.bodyEnd[silent ? 'setSilent' : 'set'](config)
         }
+    }
+
+    /**
+     * @param {Object|Number} data
+     * @returns {Number|null}
+     * @protected
+     */
+    resolveResponsiveLockPolicyWidth(data) {
+        let width = Neo.typeOf(data) === 'Number' ? data :
+            data?.width ??
+            data?.contentRect?.width ??
+            data?.rect?.width ??
+            data?.containerWidth ??
+            data?.borderBoxSize?.inlineSize ??
+            data?.contentBoxSize?.inlineSize;
+
+        width = Number(width);
+
+        return Number.isFinite(width) && width > 0 ? width : null
     }
 
     /**
@@ -620,12 +1333,14 @@ class GridContainer extends BaseContainer {
      * @protected
      */
     removeSortingCss(dataField) {
-        this.headerToolbar?.items.forEach(column => {
-            if (column.dataField !== dataField) {return;
-                console.log(column, dataField)
-                column.removeSortingCss()
+        let items = this.headerToolbar?.items;
+        if (items) {
+            for (let i = 0, len = items.length; i < len; i++) {
+                if (items[i].dataField !== dataField) {
+                    items[i].removeSortingCss()
+                }
             }
-        })
+        }
     }
 
     /**
@@ -634,11 +1349,11 @@ class GridContainer extends BaseContainer {
      * @param {Number} step
      */
     scrollByColumns(index, step) {
-        let me           = this,
-            {body}       = me,
+        let me                                                                = this,
+            {body}                                                            = me,
             {columnPositions, containerWidth, mountedColumns, visibleColumns} = body,
-            countColumns = columnPositions.getCount(),
-            newIndex     = index + step,
+            countColumns                                                      = columnPositions.getCount(),
+            newIndex                                                          = index + step,
             column, mounted, scrollLeft, visible;
 
         if (newIndex >= countColumns) {
@@ -673,10 +1388,42 @@ class GridContainer extends BaseContainer {
 
             Neo.main.DomAccess.scrollTo({
                 direction: 'left',
-                id       : me.id,
+                id       : me.getVdomRoot().id,
                 value    : scrollLeft,
                 windowId : me.windowId
             })
+        }
+    }
+
+    /**
+     * Delegates body scroll-synchronization to grid.View, which owns body orchestration.
+     * @param {Number} scrollTop
+     */
+    syncBodies(scrollTop) {
+        this.view.syncBodies(scrollTop)
+    }
+
+    /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            body         : me.body?.toJSON(),
+            cellEditing  : me.cellEditing,
+            columns      : me.columns?.items.map(item => item.toJSON()),
+            footerToolbar: me.footerToolbar?.toJSON(),
+            headerToolbar: me.headerToolbar?.toJSON(),
+            rowHeight    : me.rowHeight,
+
+            scrollManager     : me.scrollManager?.toJSON(),
+            showHeaderFilters : me.showHeaderFilters,
+            sortable          : me.sortable,
+            store             : me.store?.toJSON(),
+            useTriStateSorting: me.useTriStateSorting
         }
     }
 
@@ -687,6 +1434,35 @@ class GridContainer extends BaseContainer {
         let me = this;
 
         me.getVdomRoot()['aria-colcount'] = me.columns.count;
+
+        let cls = 'neo-hide-scrollbar';
+
+        if (me.bodyStart) {
+            let startCls = [...me.bodyStart.wrapperCls];
+            if (!startCls.includes(cls)) {
+                startCls.push(cls);
+                me.bodyStart.wrapperCls = startCls;
+            }
+        }
+
+        if (me.body) {
+            let bodyCls = [...me.body.wrapperCls];
+            let hasCls  = bodyCls.includes(cls);
+
+            if (me.bodyEnd && !hasCls) {
+                bodyCls.push(cls);
+                me.body.wrapperCls = bodyCls;
+            } else if (!me.bodyEnd && hasCls) {
+                NeoArray.remove(bodyCls, cls);
+                me.body.wrapperCls = bodyCls;
+            }
+        }
+
+        if (me.scrollManager) {
+            me.scrollManager.rowScrollPinning && me.scrollManager.updateRowScrollPinningAddon(true);
+            me.scrollManager.rowHoverSync     && me.scrollManager.updateGridRowHoverSyncAddon(me.hasLockedColumns);
+        }
+
         !silent && me.update()
     }
 

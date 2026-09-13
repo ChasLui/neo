@@ -1,8 +1,14 @@
 import BaseList  from '../list/Base.mjs';
 import ListModel from '../selection/menu/ListModel.mjs';
 import Store     from './Store.mjs';
+import TreeStore from '../data/TreeStore.mjs';
 
 /**
+ * A floating root menu forms one interaction island with its exact align target and every mounted
+ * descendant submenu. While mounted, it listens on its own app main view so outside pointer input
+ * can dismiss it even when a non-focusable target produces no focus transition. Focus movement uses
+ * the same structural island; timing is never the ownership signal.
+ *
  * @class Neo.menu.List
  * @extends Neo.list.Base
  */
@@ -24,15 +30,24 @@ class List extends BaseList {
          */
         activeSubMenu: null,
         /**
+         * Opts this menu into a directional entrance: it fades up while sliding in from the side it
+         * spawned on, so a submenu reads as emerging from the item that opened it.
+         *
+         * Deliberately NOT the inherited `list.Base#animate_`, which is a different concept — that one
+         * loads `list/plugin/Animate.mjs` to transition items between positions inside a list that is
+         * already on screen. This animates the arrival of the floating surface itself.
+         *
+         * The direction is not configured: `Neo.main.addon.DomAccess` publishes the resolved side as
+         * `neo-aligned-{top|right|bottom|left}`, so the entrance follows the zone the alignment search
+         * actually chose — including when it flips for want of space.
+         * @member {Boolean} animateSpawn_=false
+         * @reactive
+         */
+        animateSpawn_: false,
+        /**
          * @member {String[]} baseCls=['neo-menu-list','neo-list']
          */
         baseCls: ['neo-menu-list', 'neo-list'],
-        /**
-         * setTimeout() id after a focus-leave event.
-         * @member {Number|null} focusTimeoutId=null
-         * @protected
-         */
-        focusTimeoutId: null,
         /**
          * Hides a floating list on leaf item click, in case it has a parentComponent
          * @member {Boolean} hideOnLeafItemClick=true
@@ -52,6 +67,21 @@ class List extends BaseList {
          * @reactive
          */
         menuFocus_: false,
+        /**
+         * Extends the inherited set with the separator, so a rule is excluded from the click delegate
+         * and from arrow-key navigation by the same declaration.
+         *
+         * Adding the class here rather than only in `createItem()` is what makes a separator
+         * genuinely inert: the class alone paints it, while `list.Base` builds both the navigator
+         * selector and the delegate check from this config. Rendering the class without extending
+         * this list would produce a rule that looks correct and still takes focus on the first
+         * arrow-down — which is the defect this ticket exists to remove, in a subtler form.
+         * Derived from the base set rather than restated, so a fourth non-interactive concept added
+         * to `list.Base` reaches menus without a second edit here. Restating the two inherited names
+         * would rebuild, one level down, exactly the drift this config was introduced to remove.
+         * @member {String[]} nonInteractiveItemCls=[...BaseList.config.nonInteractiveItemCls,'neo-menu-separator']
+         */
+        nonInteractiveItemCls: [...BaseList.config.nonInteractiveItemCls, 'neo-menu-separator'],
         /**
          * Internal flag.
          * True for a top level menu, false for sub-menus.
@@ -76,10 +106,26 @@ class List extends BaseList {
          * @member {Neo.selection.menu.ListModel} selectionModel=ListModel
          * @reactive
          */
+        /**
+         * The key of the record whose children this level renders.
+         *
+         * Only relevant when the menu is driven by a `Neo.data.TreeStore`. The root menu keeps the
+         * default and renders the tree roots; every submenu is created with the key of the item that
+         * opened it. Distinct from the inherited `parentId`, which is the VDOM parent node.
+         * @member {String|Number} parentRecordId='root'
+         */
+        parentRecordId: 'root',
+        /**
+         * @member {Neo.selection.menu.ListModel} selectionModel=ListModel
+         */
         selectionModel: ListModel,
         /**
-         * Value for the list.Base store_ config
-         * @member {Neo.menu.Store} store=Store
+         * Value for the list.Base store_ config.
+         *
+         * Accepts either a flat `Neo.menu.Store` (nested `items` arrays on each record) or a
+         * `Neo.data.TreeStore` (hierarchy expressed via `parentId`). See `beforeSetStore()` for why a
+         * tree store is not rendered directly.
+         * @member {Neo.menu.Store|Neo.data.TreeStore} store=Store
          * @reactive
          */
         store: Store,
@@ -109,11 +155,47 @@ class List extends BaseList {
     }
 
     /**
-     * If the menu is floating, it will anchor itself to the parentRect
-     * @member {Neo.component.Base|null} parentComponent=null
-     * @reactive
+     * The exact listener config attached to the owning app's main view while this floating root is mounted.
+     * @member {Object|null} outsidePointerListener=null
+     * @protected
      */
-    parentComponent = null
+    outsidePointerListener = null
+    /**
+     * The main view currently carrying `outsidePointerListener`.
+     * @member {Neo.component.Base|null} outsidePointerListenerOwner=null
+     * @protected
+     */
+    outsidePointerListenerOwner = null
+    /**
+     * The hierarchy source, when this menu is driven by a `Neo.data.TreeStore`.
+     *
+     * The tree store is the single source of truth and is shared by every level of the cascade; it is
+     * never owned by a level and never destroyed by one. Each level renders the flat `store` derived
+     * from it. Null for the classic nested-`items` API.
+     * @member {Neo.data.TreeStore|null} sourceStore=null
+     * @protected
+     */
+    sourceStore = null
+
+    /**
+     * @summary Toggles the entrance-animation opt-in across this menu and every cached descendant.
+     *
+     * Triggered after the animateSpawn config got changed.
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetAnimateSpawn(value, oldValue) {
+        this[value ? 'addCls' : 'removeCls']('neo-animate-spawn');
+
+        // Submenus are cached in `subMenuMap` and reused across open/close cycles, so the value copied
+        // into `showSubMenu()`'s create config only ever reaches the ones created after the change. A
+        // cascade whose levels disagreed would be worse than one that does not animate at all, so the
+        // change follows `afterSetTheme()`'s shape and reaches every level that already exists.
+        Object.values(this.subMenuMap || {}).forEach(menu => {
+            menu.animateSpawn = value
+        })
+    }
 
     /**
      * Triggered after the items config got changed
@@ -140,17 +222,26 @@ class List extends BaseList {
 
             if (me.isRoot) {
                 if (!value) {
-                    me.focusTimeoutId = setTimeout(() => {
-                        me[me.floating ? 'unmount' : 'hideSubMenu']()
-                    }, 20)
-                } else {
-                    clearTimeout(me.focusTimeoutId);
-                    me.focusTimeoutId = null
+                    me[me.floating ? 'unmount' : 'hideSubMenu']()
                 }
             } else {
                 // bubble the focus change upwards
                 me.parentMenu.menuFocus = value
             }
+        }
+    }
+
+    /**
+     * Keeps the app-root outside-pointer listener symmetric with the floating root's mounted lifecycle.
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetMounted(value, oldValue) {
+        super.afterSetMounted(value, oldValue);
+
+        if (oldValue !== undefined && this.isRoot && this.floating) {
+            this.syncOutsidePointerListener(value)
         }
     }
 
@@ -179,6 +270,70 @@ class List extends BaseList {
     }
 
     /**
+     * Triggered before the store config gets changed.
+     *
+     * A `Neo.data.TreeStore` is deliberately NOT handed to `list.Base` for rendering. The inherited
+     * index math walks the full store: `getSelectedIndex()` and `getHeaderlessIndex()` both index into
+     * `store.items`. A level rendering only a subset of a shared tree store would therefore resolve
+     * selection and key navigation against every record in the tree while its DOM held one level —
+     * it would render correctly and mis-target silently.
+     *
+     * Instead the tree store is kept as `sourceStore` and this level receives its own flat store
+     * holding exactly the records it renders. `syncLevelRecords()` fills it once the configs are applied.
+     * @param {Object|Neo.data.Store|Neo.data.TreeStore} value
+     * @param {Object|Neo.data.Store} oldValue
+     * @returns {Neo.data.Store}
+     * @protected
+     */
+    beforeSetStore(value, oldValue) {
+        if (value instanceof TreeStore) {
+            this.sourceStore = value;
+
+            // The level store reuses the tree store's model CLASS, so its records keep every field the
+            // hierarchy declares (isLeaf, parentId, depth) next to the menu fields. Re-adding records
+            // under menu.Model instead would silently drop them, and hasChildren() reads isLeaf.
+            // A fresh instance, not the shared one: a level owns and destroys its own store, never the source.
+            value = {model: value.model.constructor, module: Store}
+        }
+
+        return super.beforeSetStore(value, oldValue)
+    }
+
+    /**
+     * Renders a `separator` record as a rule rather than a command.
+     *
+     * The class is what the stylesheet paints and what `nonInteractiveItemCls` excludes, so this and
+     * that config are two halves of one contract — see the config's own note.
+     *
+     * Two corrections to what the base class produced for it. `createItemContent()` returns an empty
+     * array for a separator, and `list.Base` reads "every child is removeDom" as "hide the item", so
+     * `removeDom` is cleared explicitly — an empty rule is the point, not an absent one. And the item
+     * is taken out of the accessibility tree's command set: `role="separator"` is what it is,
+     * `aria-selected` is meaningless on something that cannot be selected, and dropping `tabIndex`
+     * keeps it off the sequential focus path even if a caller drives focus by hand.
+     *
+     * @param {Object} record
+     * @param {Number} index
+     * @param {Number} [poolIndex=index]
+     * @returns {Object} The list item vdom object
+     */
+    createItem(record, index, poolIndex=index) {
+        let item = super.createItem(record, index, poolIndex);
+
+        if (item && record.separator) {
+            item.cls.push('neo-menu-separator');
+
+            item.removeDom = false;
+            item.role      = 'separator';
+
+            delete item['aria-selected'];
+            delete item.tabIndex
+        }
+
+        return item
+    }
+
+    /**
      * Override this method for custom renderers
      * @param {Object} record
      * @param {Number} index
@@ -187,8 +342,17 @@ class List extends BaseList {
     createItemContent(record, index) {
         let me        = this,
             {iconCls} = record,
-            id        = record[me.store.keyProperty],
-            vdomCn    = [{tag: 'span', cls: ['neo-content'], text: record[me.displayField]}];
+            id        = me.store.getKey(record),
+            vdomCn;
+
+        // A separator is a rule, not a command: no text slot, no icon slot, no submenu arrow. It
+        // renders as its own empty box, which is what lets the stylesheet give it margin — a border
+        // on the preceding item cannot be spaced without moving that whole row.
+        if (record.separator) {
+            return []
+        }
+
+        vdomCn = [{tag: 'span', cls: ['neo-content'], text: record[me.displayField]}];
 
         if (iconCls && iconCls !== '') {
             vdomCn.unshift({tag: 'i', cls: ['neo-menu-icon', 'neo-icon', iconCls], id: me.getIconId(id)})
@@ -209,7 +373,17 @@ class List extends BaseList {
             {activeSubMenu} = me,
             subMenuMap      = me.subMenuMap || {};
 
+        me.syncOutsidePointerListener(false);
         activeSubMenu?.unmount();
+
+        // The tree store outlives every level, so a level that stops rendering must stop listening.
+        // Its own object literal — on() and un() both consume keys from what they are handed.
+        me.sourceStore?.un({
+            mutate      : me.onSourceStoreMutate,
+            recordChange: me.onSourceStoreRecordChange,
+            sort        : me.onSourceStoreSort,
+            scope       : me
+        });
 
         Object.entries(subMenuMap).forEach(([key, value]) => {
             value.destroy();
@@ -217,6 +391,48 @@ class List extends BaseList {
         });
 
         super.destroy(...args)
+    }
+
+    /**
+     * @summary Tests whether a serialized DOM path belongs to this menu tree or its exact trigger.
+     * @param {Object[]} [path]
+     * @returns {Boolean}
+     * @protected
+     */
+    isInteractionPath(path=[]) {
+        const ids  = new Set(path.map(item => item.id).filter(Boolean));
+        let   root = this;
+
+        while (root.parentMenu) {
+            root = root.parentMenu
+        }
+
+        const menus = [root];
+        let   menu;
+
+        while ((menu = menus.pop())) {
+            if (ids.has(menu.id)) {
+                return true
+            }
+
+            Object.values(menu.subMenuMap || {}).forEach(submenu => {
+                submenu?.mounted && menus.push(submenu)
+            })
+        }
+
+        return Neo.isString(root.align?.target) && ids.has(root.align.target)
+    }
+
+    /**
+     * Dismisses a floating root from pointer input outside the complete menu interaction island.
+     * @param {Object} data
+     * @param {Object[]} [data.path]
+     * @protected
+     */
+    onAppMouseDown(data) {
+        if (this.isRoot && this.floating && !this.isInteractionPath(data.path)) {
+            this.unmount()
+        }
     }
 
     /**
@@ -245,11 +461,41 @@ class List extends BaseList {
     }
 
     /**
+     * Returns the data-related configs for a child level, for whichever store shape drives this menu.
+     *
+     * Tree-driven levels share the one `sourceStore` and identify their slice by `parentRecordId`;
+     * classic levels keep handing down the nested `items` array. Kept as its own method so both shapes
+     * stay side by side and visible, instead of hiding a branch inside `showSubMenu()`'s config literal.
+     * @param {Object} record The item that opened the submenu
+     * @returns {Object}
+     * @protected
+     */
+    getSubMenuData(record) {
+        let me = this;
+
+        if (me.sourceStore) {
+            return {
+                parentRecordId: me.store.getKey(record),
+                store         : me.sourceStore
+            }
+        }
+
+        return {items: record.items}
+    }
+
+    /**
      * Checks if a record has items
      * @param {Object} record
      * @returns {Boolean}
      */
     hasChildren(record) {
+        // TreeModel declares isLeaf: true by default, so a branch node opts in explicitly. Testing the
+        // declared flag rather than childCount keeps async subtree loading intact: a branch whose
+        // children have not arrived yet must still render its arrow and open.
+        if (this.sourceStore) {
+            return record.isLeaf === false
+        }
+
         return Array.isArray(record.items) && record.items.length > 0
     }
 
@@ -281,21 +527,33 @@ class List extends BaseList {
     onFocusLeave(data) {
         super.onFocusLeave(data);
 
-        let insideParent = false,
-            parentId     = this.parentComponent?.id,
-            item;
+        const leftPathIsOwnTree = data.oldPath?.some(item => item.id === this.id);
 
-        if (parentId) {
-            for (item of data.oldPath) {
-                if (item.id === parentId) {
-                    insideParent = true;
-                    break
-                }
-            }
-        }
-
-        if (!insideParent) {
+        if (!data.relatedTarget || leftPathIsOwnTree || !this.isInteractionPath(data.oldPath)) {
             this.menuFocus = false
+        }
+    }
+
+    /**
+     * Adds or removes one retained `mousedown` config on the owning app main view.
+     * @param {Boolean} attach
+     * @protected
+     */
+    syncOutsidePointerListener(attach) {
+        let me    = this,
+            owner = me.outsidePointerListenerOwner;
+
+        if (attach && !owner) {
+            owner = me.app?.mainView;
+
+            if (owner) {
+                me.outsidePointerListener ||= {mousedown: me.onAppMouseDown, scope: me};
+                owner.addDomListeners(me.outsidePointerListener);
+                me.outsidePointerListenerOwner = owner
+            }
+        } else if (!attach && owner) {
+            owner.removeDomListeners(me.outsidePointerListener);
+            me.outsidePointerListenerOwner = null
         }
     }
 
@@ -310,13 +568,36 @@ class List extends BaseList {
     }
 
     /**
+     *
+     */
+    onConstructed() {
+        super.onConstructed();
+
+        let me = this;
+
+        if (me.sourceStore) {
+            me.syncLevelRecords();
+
+            // Its own object: Observable#on() and #un() CONSUME keys from what they are handed
+            // (`scope` among them), so the two calls can never share one literal.
+            me.sourceStore.on({
+                mutate      : me.onSourceStoreMutate,
+                recordChange: me.onSourceStoreRecordChange,
+                sort        : me.onSourceStoreSort,
+                scope       : me
+            })
+        }
+    }
+
+    /**
      * @param {String} nodeId
      */
     onKeyDownEnter(nodeId) {
         if (nodeId) {
-            let me       = this,
-                recordId = me.getItemRecordId(nodeId),
-                record   = me.store.get(recordId),
+            let me          = this,
+                recordId    = me.getItemRecordId(nodeId),
+                record      = me.store.get(recordId),
+                hasChildren = me.hasChildren(record),
                 submenu;
 
             me.callback(record.handler, me, [record]);
@@ -326,9 +607,28 @@ class List extends BaseList {
                 value  : record.route
             });
 
-            me.hideOnLeafItemClick && !record.items && me.unmount();
+            // hasChildren() is the single branch predicate: it is store-shape aware, and it does not
+            // treat an empty `items: []` array as a parent the way a raw truthiness test would.
+            if (me.hideOnLeafItemClick && !hasChildren) {
+                /*
+                    Through the SETTER, and that is the whole point. `afterSetMenuFocus` is the only
+                    path that closes ANCESTORS: a non-root menu bubbles to `parentMenu`, recursing
+                    until the floating root unmounts itself and cascades back down via `hideSubMenu()`.
 
-            if (record.items) {
+                    `unmount()` writes `_menuFocus` silently on purpose — reaching it *from*
+                    `afterSetMenuFocus` must not re-enter that hook. But a leaf click reaches
+                    `unmount()` directly, so calling it first swallowed the only signal the ancestors
+                    ever get, and left the submenu closed under a still-open parent. It also disarmed
+                    the fallback: a later `menuFocus = false` from `onFocusLeave` found the value
+                    already false, so the setter fired nothing.
+                */
+                me.menuFocus = false;
+
+                // The root's cascade may already have taken this menu down.
+                me.mounted && me.unmount()
+            }
+
+            if (hasChildren) {
                 submenu = me.subMenuMap?.[me.getMenuMapId(recordId)];
 
                 if (submenu) {
@@ -368,24 +668,27 @@ class List extends BaseList {
         const
             me           = this,
             {store}      = me,
-            recordId     = record[store.keyProperty],
+            recordId     = store.getKey(record),
             subMenuMap   = me.subMenuMap || (me.subMenuMap = {}),
             subMenuMapId = me.getMenuMapId(recordId),
             subMenu      = subMenuMap[subMenuMapId] || (subMenuMap[subMenuMapId] = Neo.create({
-                module         : List,
-                align          : {
-                    target       : nodeId,
-                    edgeAlign    : 'l0-r0',
-                    axisLock     : true,
-                    targetMargin : me.subMenuGap
+                module: List,
+                align : {
+                    target      : nodeId,
+                    edgeAlign   : 'l0-r0',
+                    axisLock    : true,
+                    targetMargin: me.subMenuGap
                 },
-                appName        : me.appName,
-                displayField   : me.displayField,
-                floating       : true,
-                items          : record.items,
+                // Inherited deliberately: the entrance exists to make a CASCADE legible, so a submenu
+                // that did not animate while its root did would invert the effect it is there for.
+                animateSpawn: me.animateSpawn,
+                appName     : me.appName,
+                displayField: me.displayField,
+                floating    : true,
+                ...me.getSubMenuData(record),
                 isRoot         : false,
                 parentComponent: me.parentComponent,
-                parentId       : Neo.apps[me.appName].mainView.id,
+                parentId       : me.app.mainView.id,
                 parentIndex    : store.indexOf(record),
                 parentMenu     : me,
                 theme          : me.theme,
@@ -399,12 +702,101 @@ class List extends BaseList {
     }
 
     /**
+     * A mutation anywhere in the shared tree is broadcast to every level. Only the records parented by
+     * this level's `parentRecordId` belong here.
+     * @param {Object} record
+     * @returns {Boolean}
+     * @protected
+     */
+    belongsToLevel(record) {
+        return (record.parentId || 'root') === this.parentRecordId
+    }
+
+    /**
+     * Splices this level for a tree mutation, rather than re-deriving it.
+     *
+     * Records contributed to a group after mount therefore appear without rebuilding the cascade, and
+     * order follows the Structural Layer — so a sort applied to the tree store reaches every level.
+     * @param {Object} data
+     * @param {Object[]} data.addedItems
+     * @param {Object[]} data.removedItems
+     * @protected
+     */
+    onSourceStoreMutate(data) {
+        let me            = this,
+            {sourceStore} = me,
+            removed       = (data.removedItems || []).filter(record => me.belongsToLevel(record)),
+            added         = (data.addedItems   || [])
+                .filter(record => me.belongsToLevel(record))
+                // Resolve every addition through the source before inserting it. The mutate payload can
+                // carry raw data, and letting the level store hydrate that would mint a SECOND record
+                // instance for the same key. Levels resolve a later recordChange by identity, so a clone
+                // is not merely wasteful — the row silently stops updating for the rest of its life.
+                .map(record => sourceStore.get(sourceStore.getKey(record)) || record);
+
+        // Splicing the level store is enough to repaint it: the collection turns a mutation into a
+        // `load` (via onCollectionMutate), which list.Base already re-renders on. Calling createItems()
+        // here as well rendered the level twice per contribution.
+        removed.length && me.store.remove(removed);
+        added.length   && me.store.add(added)
+    }
+
+    /**
+     * Re-derives this level after the tree store sorts.
+     *
+     * A sort reorders the Structural Layer wholesale, so sibling order is controlled at the tree and
+     * every level follows it. Re-deriving is correct here precisely because nothing is spliceable —
+     * unlike a mutation, a sort has no added or removed set.
+     * @protected
+     */
+    onSourceStoreSort() {
+        // syncLevelRecords() clears and refills the level store, and that mutation repaints it through
+        // the same load path a contribution uses. No explicit re-render here either.
+        this.syncLevelRecords()
+    }
+
+    /**
+     * Repaints the single row a changed record occupies, if this level renders it.
+     *
+     * A level shares record INSTANCES with the tree store, so the data is already current — only the
+     * rendering needs to catch up. `data.index` from the source is the tree's projection index and is
+     * meaningless here, so the row is resolved against this level's own store.
+     * @param {Object} data
+     * @param {Object} data.record
+     * @protected
+     */
+    onSourceStoreRecordChange(data) {
+        let me    = this,
+            index = me.store.indexOf(data.record);
+
+        index > -1 && me.onStoreRecordChange({...data, index})
+    }
+
+    /**
+     * Fills this level's flat store with exactly the records it renders.
+     *
+     * A no-op for the classic nested-`items` API, where `afterSetItems()` already owns the contents.
+     * Driven from `onConstructed()` rather than a config setter because the derivation needs both
+     * `sourceStore` and `parentRecordId`, and config application order is not a contract worth
+     * depending on.
+     * @protected
+     */
+    syncLevelRecords() {
+        let me = this;
+
+        if (me.sourceStore) {
+            me.store.clear();
+            me.store.add(me.sourceStore.getChildren(me.parentRecordId))
+        }
+    }
+
+    /**
      * @param {String} nodeId
      * @param {Object} record
      */
     toggleSubMenu(nodeId, record) {
         let me       = this,
-            recordId = record[me.getKeyProperty()],
+            recordId = me.store.getKey(record),
             submenu  = me.subMenuMap?.[me.getMenuMapId(recordId)];
 
         if (!submenu?.mounted) {
@@ -418,6 +810,7 @@ class List extends BaseList {
      *
      */
     unmount() {
+        this._menuFocus = false;
         this.selectionModel?.deselectAll(true); // silent update
         this.hideSubMenu();
 

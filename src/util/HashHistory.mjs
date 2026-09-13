@@ -21,15 +21,15 @@ class HashHistory extends Base {
          */
         className: 'Neo.util.HashHistory',
         /**
-         * @member {Boolean} singleton=true
-         * @protected
-         */
-        singleton: true,
-        /**
          * @member {Number} maxItems=50
          * @protected
          */
         maxItems: 50,
+        /**
+         * @member {Boolean} singleton=true
+         * @protected
+         */
+        singleton: true,
         /**
          * Storing one stack per windowId
          * @member {Object} stacks={}
@@ -111,7 +111,7 @@ class HashHistory extends Base {
      * @returns {Object}
      */
     second(windowId) {
-        return this.getAt(0, windowId)
+        return this.getAt(1, windowId)
     }
 }
 

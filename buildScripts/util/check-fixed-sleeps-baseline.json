@@ -1,0 +1,17 @@
+[
+    {
+        "file": "test/playwright/unit/manager/DragCoordinator.spec.mjs",
+        "text": "timeoutId     : setTimeout(() => { sourceTimerCleared = false }, 60_000)",
+        "count": 1
+    },
+    {
+        "file": "test/playwright/unit/manager/DragCoordinator.spec.mjs",
+        "text": "timeoutId     : setTimeout(() => { targetTimerCleared = false }, 60_000)",
+        "count": 1
+    },
+    {
+        "file": "test/playwright/unit/manager/DragCoordinator.spec.mjs",
+        "text": "timeoutId     : setTimeout(() => {}, 60_000)",
+        "count": 1
+    }
+]

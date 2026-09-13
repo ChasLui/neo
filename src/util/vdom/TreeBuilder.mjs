@@ -39,24 +39,42 @@ class TreeBuilder extends Base {
             return node
         }
 
+        // JIT ID Generation (App Authority)
+        // If we are processing a VDOM tree (childKey === 'cn') and the node has no ID,
+        // we must generate one now to ensure deterministic identity before the VDOM leaves the App Worker.
+        if (childKey === 'cn' && !node.id) {
+            node.id = Neo.getId(node.vtype === 'text' ? 'vtext' : 'vnode')
+        }
+
         let output = {...node}; // Shallow copy
 
         if (node[childKey]) {
             output[childKey] = [];
 
-            node[childKey].forEach(item => {
-                let currentItem = item,
+            for (let i = 0, len = node[childKey].length; i < len; i++) {
+                let item        = node[childKey][i],
+                    currentItem = item,
                     childDepth;
 
                 if (currentItem.componentId) {
-                    // Prune the branch only if we are at the boundary AND the child is not part of a merged update
-                    if (depth === 1 && !mergedChildIds?.has(currentItem.componentId)) {
-                        output[childKey].push({...currentItem, neoIgnore: true});
-                        return // Stop processing this branch
+                    const component = ComponentManager.get(currentItem.componentId);
+
+                    // Sparse Tree Generation & Scoped Updates
+                    // We prune the branch (send a placeholder) if:
+                    // 1. We are at the depth boundary (depth === 1) AND it's not a merged update.
+                    // 2. We are in a Merged Update (mergedChildIds exists) AND this component is not in the AllowList (not dirty/bridge).
+                    // Exception: We never prune if depth is -1 (Full Tree) or if the component is not mounted yet.
+                    if (depth !== -1 && component?.vnode) {
+                        const isExpandable = mergedChildIds?.has(currentItem.componentId);
+
+                        if ((depth === 1 && !isExpandable) || (mergedChildIds && !isExpandable)) {
+                            output[childKey].push({...currentItem, neoIgnore: true});
+                            continue // Stop processing this branch, move to next item
+                        }
                     }
-                    // Expand the branch if it's part of a merged update, or if the depth requires it
-                    else if (depth > 1 || depth === -1 || mergedChildIds?.has(currentItem.componentId)) {
-                        const component = ComponentManager.get(currentItem.componentId);
+
+                    // Expand the branch if it's part of a merged update, or if the depth requires it, OR if the vnode is missing
+                    if (depth > 1 || depth === -1 || mergedChildIds?.has(currentItem.componentId) || !component?.vnode) {
                         // Use the correct tree type based on the childKey
                         const componentTree = childKey === 'cn' ? component?.vdom : component?.vnode;
                         if (componentTree) {
@@ -72,12 +90,50 @@ class TreeBuilder extends Base {
                 }
 
                 output[childKey].push(this.#buildTree(currentItem, childDepth, mergedChildIds, childKey))
-            })
+            }
         }
 
         return output
     }
 
+
+    /**
+     * The length of the longest chain of nested components rooted at the given component, counting the
+     * component itself as 1. A component with no child components is 1; one whose vdom references a
+     * child which itself references another is 3.
+     *
+     * This is the inverse of the pruning `#buildTree` performs, and lives beside it so the two read the
+     * same structure: a caller that needs a tree fully expanded down to `component` can pass
+     * `distanceToComponent + getComponentDepth(component)` as its depth instead of a literal, which
+     * would silently become a snapshot of whatever nesting happened to ship.
+     *
+     * @param {Neo.component.Base} component
+     * @returns {Number}
+     */
+    getComponentDepth(component) {
+        let depth = 1;
+
+        const scan = node => {
+            if (typeof node !== 'object' || node === null) {
+                return
+            }
+
+            if (node.componentId) {
+                const child = ComponentManager.get(node.componentId);
+
+                if (child) {
+                    depth = Math.max(depth, 1 + this.getComponentDepth(child));
+                    return
+                }
+            }
+
+            node.cn?.forEach(scan)
+        };
+
+        component?.vdom && scan(component.vdom);
+
+        return depth
+    }
 
     /**
      * Copies a given vdom tree and replaces child component references with their vdom.

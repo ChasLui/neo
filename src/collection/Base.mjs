@@ -1,17 +1,19 @@
-import Base       from '../core/Base.mjs';
-import Filter     from './Filter.mjs';
-import Logger     from '../util/Logger.mjs';
-import NeoArray   from '../util/Array.mjs';
-import Observable from '../core/Observable.mjs';
-import Sorter     from './Sorter.mjs';
+import {isDescriptor} from '../core/ConfigSymbols.mjs';
+import Base           from '../core/Base.mjs';
+import Filter         from './Filter.mjs';
+import Logger         from '../util/Logger.mjs';
+import Observable     from '../core/Observable.mjs';
+import Sorter         from './Sorter.mjs';
 
-const countMutations   = Symbol('countMutations'),
-      isFiltered       = Symbol('isFiltered'),
-      isSorted         = Symbol('isSorted'),
-      silentUpdateMode = Symbol('silentUpdateMode'),
-      toAddArray       = Symbol('toAddArray'),
-      toRemoveArray    = Symbol('toRemoveArray'),
-      updatingIndex    = Symbol('updatingIndex');
+const
+    countMutations     = Symbol.for('countMutations'),
+    initialIndexSymbol = Symbol.for('initialIndex'),
+    isFiltered         = Symbol.for('isFiltered'),
+    isSorted           = Symbol.for('isSorted'),
+    silentUpdateMode   = Symbol.for('silentUpdateMode'),
+    toAddArray         = Symbol.for('toAddArray'),
+    toRemoveArray      = Symbol.for('toRemoveArray'),
+    updatingIndex      = Symbol.for('updatingIndex');
 
 /**
  * @class Neo.collection.Base
@@ -68,10 +70,22 @@ class Collection extends Base {
          */
         filters_: [],
         /**
+         * A map containing the internalId & reference of each collection item for faster access.
+         * Only populated if trackInternalId is true.
+         * @member {Map} internalIdMap_=null
+         * @protected
+         * @reactive
+         */
+        internalIdMap_: null,
+        /**
          * @member {Object[]|null} items_=null
          * @reactive
          */
-        items_: null,
+        items_: {
+            [isDescriptor]: true,
+            clone         : 'shallow',
+            value         : null
+        },
         /**
          * The unique(!) key property of each collection item
          * @member {String} keyProperty='id'
@@ -113,8 +127,24 @@ class Collection extends Base {
          * @member {String|null} sourceId_=null
          * @reactive
          */
-        sourceId_: null
+        sourceId_: null,
+        /**
+         * True to track internalIds in a separate map for O(1) lookup
+         * @member {Boolean} trackInternalId=false
+         */
+        trackInternalId: false,
+        /**
+         * Array of strings for fields that should use value banding (consecutive identical values toggle a boolean flag).
+         * @member {String[]|null} valueBandingFields_=null
+         * @reactive
+         */
+        valueBandingFields_: null
     }
+
+    /**
+     * @member {Number} initialIndexCounter=0
+     */
+    initialIndexCounter = 0
 
     /**
      * @param config
@@ -178,15 +208,27 @@ class Collection extends Base {
      */
     afterSetItems(value, oldValue) {
         if (value) {
-            let me            = this,
-                {keyProperty} = me,
-                i             = 0,
-                len           = value.length,
-                item;
+            let me = this,
+                i  = 0,
+                len = value.length,
+                internalId, item;
 
             for (; i < len; i++) {
                 item = value[i];
-                me.map.set(item[keyProperty], item)
+
+                me.itemFactory?.(item);
+
+                if (item) {
+                    me.map.set(me.getKey(item), item);
+
+                    if (me.trackInternalId) {
+                        internalId = me.getInternalKey(item);
+
+                        if (internalId) {
+                            me.internalIdMap.set(internalId, item)
+                        }
+                    }
+                }
             }
 
             me.count = len
@@ -215,6 +257,18 @@ class Collection extends Base {
     }
 
     /**
+     * Triggered after the valueBandingFields config got changed
+     * @param {String[]|null} value
+     * @param {String[]|null} oldValue
+     * @protected
+     */
+    afterSetValueBandingFields(value, oldValue) {
+        if (value) {
+            this.calcValueBands()
+        }
+    }
+
+    /**
      * Triggered after the sourceId config got changed
      * @param {Number|String} value
      * @param {Number|String} oldValue
@@ -225,8 +279,13 @@ class Collection extends Base {
             let me     = this,
                 source = Neo.get(value);
 
-            me._items = [...source._items];
+            me._items = source._items.slice();
             me.map    = new Map(source.map); // creates a clone of the original map
+            me.count  = me._items.length;
+
+            if (me.trackInternalId && source.trackInternalId) {
+                me.internalIdMap = new Map(source.internalIdMap)
+            }
 
             const listenersConfig = {
                 mutate: me.onMutate,
@@ -313,6 +372,15 @@ class Collection extends Base {
         }
 
         return value
+    }
+
+    /**
+     * @param {Map|null} value
+     * @param {Map|null} oldValue
+     * @protected
+     */
+    beforeSetInternalIdMap(value, oldValue) {
+        return !value && this.trackInternalId ? new Map() : value
     }
 
     /**
@@ -409,10 +477,108 @@ class Collection extends Base {
     }
 
     /**
-     * Removes all items and clears the map
+     * Calculates the valueBands object for each item.
+     * This is useful for UI grids to alternating highlight cells with the same value.
+     * @param {Number} [startIndex=0] Optimization to only recalculate from a specific index downwards
+     * @protected
      */
-    clear() {
-        this.splice(0, this.count)
+    calcValueBands(startIndex=0) {
+        let me     = this,
+            fields = me.valueBandingFields;
+
+        if (!fields || fields.length === 0) {
+            me.valueBandsMap?.clear();
+            return;
+        }
+
+        let items = me._items;
+
+        if (!me.valueBandsMap) {
+            me.valueBandsMap = new Map()
+        }
+
+        if (startIndex === 0) {
+            me.valueBandsMap.clear()
+        }
+
+        if (items) {
+            let i    = startIndex,
+                len  = items.length,
+                bands = {},
+                prev  = {},
+                item, isRecord, key, val;
+
+            if (startIndex > 0 && startIndex <= len) {
+                let prevItem = items[startIndex - 1];
+
+                if (prevItem) {
+                    let prevKey  = me.getKey(prevItem),
+                        prevMap  = me.valueBandsMap.get(prevKey),
+                        prevIsRecord = Neo.isRecord(prevItem);
+
+                    if (prevMap) {
+                        fields.forEach(f => {
+                            bands[f] = prevMap[f];
+                            prev[f]  = prevIsRecord ? prevItem.get(f) : prevItem[f]
+                        })
+                    } else {
+                        startIndex = 0; // Fallback if previous state is missing
+                        i = 0;
+                        me.valueBandsMap.clear()
+                    }
+                } else {
+                    startIndex = 0;
+                    i = 0;
+                    me.valueBandsMap.clear()
+                }
+            }
+
+            for (; i < len; i++) {
+                item = items[i];
+
+                if (!item) {
+                    continue
+                }
+
+                key      = me.getKey(item);
+                isRecord = Neo.isRecord(item);
+
+                if (i === 0 || Object.keys(prev).length === 0) {
+                    fields.forEach(f => {
+                        bands[f] = true;
+                        prev[f]  = isRecord ? item.get(f) : item[f]
+                    })
+                } else {
+                    fields.forEach(f => {
+                        val = isRecord ? item.get(f) : item[f];
+                        if (val !== prev[f]) {
+                            bands[f] = !bands[f];
+                            prev[f]  = val
+                        }
+                    })
+                }
+
+                me.valueBandsMap.set(key, {...bands})
+            }
+        }
+    }
+
+    /**
+     * Removes all items and clears the map
+     * @param {Boolean} [reset=true] True to also clear the allItems collection.
+     * This is useful for filtering: You can clear the filtered state (the collection items),
+     * but keep the unfiltered source (allItems) intact.
+     * This enables re-filtering the dataset.
+     */
+    clear(reset=true) {
+        let me = this;
+
+        if (reset) {
+            me.allItems?.clear();
+        }
+
+        me.splice(0, me.count);
+        me.initialIndexCounter = 0
     }
 
     /**
@@ -425,12 +591,22 @@ class Collection extends Base {
 
     /**
      * Removes all items and clears the map, without firing a mutate event
+     * @param {Boolean} [reset=true] True to also clear the allItems collection.
+     * This is useful for filtering: You can clear the filtered state (the collection items),
+     * but keep the unfiltered source (allItems) intact.
+     * This enables re-filtering the dataset.
      */
-    clearSilent() {
+    clearSilent(reset=true) {
         let me = this;
 
+        if (reset) {
+            me.allItems?.clearSilent();
+        }
+
         me._items.splice(0, me.count);
-        me.map.clear()
+        me.map.clear();
+        me.internalIdMap?.clear();
+        me.initialIndexCounter = 0
     }
 
     /**
@@ -460,7 +636,7 @@ class Collection extends Base {
         delete config.sorters;
 
         if (me._items.length > 0) {
-            config.items  = [...me._items];
+            config.items  = me._items.slice();
             config.count = config.items.length;
         }
 
@@ -481,13 +657,30 @@ class Collection extends Base {
     }
 
     /**
+     * Creates the allItems collection used for filtering.
+     * Can be overridden by subclasses.
+     * @param {Object} config
+     * @returns {Neo.collection.Base}
+     * @protected
+     */
+    createAllItems(config) {
+        return Neo.create(this.constructor, config)
+    }
+
+    /**
      * Clears the map & items array before the super call
      */
     destroy() {
         let me = this;
 
+        me.allItems?.destroy();
+
+        me.filters?.forEach(item => item?.destroy());
+        me.sorters?.forEach(item => item?.destroy());
+
         me._items.splice(0, me._items.length);
         me.map.clear();
+        me.internalIdMap?.clear();
 
         super.destroy()
     }
@@ -500,12 +693,12 @@ class Collection extends Base {
      */
     doSort(items=this._items, silent=false) {
         let me                = this,
-            previousItems     = [...items],
+            previousItems     = items.slice(),
             {sorters, sortDirections, sortProperties} = me,
             countSorters      = sortProperties.length || 0,
             hasSortByMethod   = false,
             hasTransformValue = false,
-            i, mappedItems, obj, sorter, sortProperty, sortValue;
+            i, mappedItems, obj, sorter, sortProperty, sortValue, val1, val2;
 
         if (countSorters > 0) {
             sorters.forEach(key => {
@@ -559,12 +752,17 @@ class Collection extends Base {
 
                     for (; i < countSorters; i++) {
                         sortProperty = sortProperties[i];
+                        val1         = a[sortProperty];
+                        val2         = b[sortProperty];
 
-                        if (a[sortProperty] > b[sortProperty]) {
+                        if (val1 == null && val2 != null) return  1;
+                        if (val1 != null && val2 == null) return -1;
+
+                        if (val1 > val2) {
                             return 1 * sortDirections[i]
                         }
 
-                        if (a[sortProperty] < b[sortProperty]) {
+                        if (val1 < val2) {
                             return -1 * sortDirections[i]
                         }
                     }
@@ -581,6 +779,8 @@ class Collection extends Base {
         }
 
         me[isSorted] = countSorters > 0;
+
+        me.calcValueBands();
 
         if (!silent && me[updatingIndex] === 0) {
             me.fire('sort', {
@@ -609,6 +809,8 @@ class Collection extends Base {
         if (endSilentUpdateMode) {
             me[silentUpdateMode] = false
         } else {
+            me.calcValueBands();
+
             me.fire('mutate', {
                 addedItems  : me[toAddArray],
                 removedItems: me[toRemoveArray]
@@ -656,9 +858,10 @@ class Collection extends Base {
     }
 
     /**
+     * @param {Boolean} [silent=false]
      * @protected
      */
-    filter() {
+    filter(silent=false) {
         let me              = this,
             filters         = me._filters,
             countAllFilters = filters.length,
@@ -668,7 +871,7 @@ class Collection extends Base {
             countItems      = items.length,
             filteredItems   = [],
             needsSorting    = false,
-            oldItems        = [...me._items],
+            oldItems        = me._items.slice(),
             config, isIncluded, item, j, tmpItems;
 
         for (; i < countAllFilters; i++) {
@@ -682,9 +885,13 @@ class Collection extends Base {
                 needsSorting = true
             }
 
-            me.clearSilent();
+            // We cannot use clearSilent() here, since it would clear allItems as well
+            me._items.splice(0, me.count);
+            me.map.clear();
+            me.internalIdMap?.clear();
+            me.initialIndexCounter = 0;
 
-            me.items = [...me.allItems._items]
+            me.items = me.allItems._items.slice()
         } else {
             if (!me.allItems) {
                 config = {...me.originalConfig};
@@ -697,16 +904,20 @@ class Collection extends Base {
                 // which stores the unfiltered data. It is crucial to use `me.constructor` here.
                 // If we hardcode `Collection`, subclasses like `data.Store` would lose their specific
                 // functionalities (e.g., lazy record instantiation on `get()`) for the `allItems` collection.
-                me.allItems = Neo.create(me.constructor, {
+                // Not a `sourceId` collection: that would subscribe it to `mutate` as one listener
+                // among others, ordered by registration. `splice` writes into it inline instead —
+                // see `mirrorMutation` — so the projection needs neither a subscription nor a source.
+                me.allItems = me.createAllItems({
                     ...Neo.clone(config, true, true),
                     id         : me.id + '-all',
-                    items      : [...me._items], // Initialize with a shallow copy of current items
-                    keyProperty: me.keyProperty,
-                    sourceId   : me.id
-                })
+                    keyProperty: me.keyProperty
+                });
+
+                me.allItems.items = me._items.slice();
             }
 
             me.map.clear();
+            me.internalIdMap?.clear();
 
             if (me.filterMode === 'primitive') {
                 // using for loops on purpose -> performance
@@ -724,13 +935,21 @@ class Collection extends Base {
 
                     if (isIncluded) {
                         filteredItems.push(item);
-                        me.map.set(item[me.keyProperty], item)
+                        me.map.set(me.getKey(item), item);
+
+                        if (me.trackInternalId) {
+                            const internalId = me.getInternalKey(item);
+
+                            if (internalId) {
+                                me.internalIdMap.set(internalId, item)
+                            }
+                        }
                     }
                 }
 
                 me._items = filteredItems // silent update, the map is already in place
             } else {
-                filteredItems = [...items];
+                filteredItems = items.slice();
 
                 for (j=0; j < countAllFilters; j++) {
                     tmpItems = [];
@@ -741,7 +960,7 @@ class Collection extends Base {
                         }
                     }
 
-                    filteredItems = [...tmpItems];
+                    filteredItems = tmpItems.slice();
                     countItems    = filteredItems.length
                 }
 
@@ -757,12 +976,14 @@ class Collection extends Base {
 
         me.count = me.items.length;
 
-        me.fire('filter', {
-            isFiltered: me[isFiltered],
-            items     : me.items,
-            oldItems,
-            scope     : me
-        })
+        if (!silent) {
+            me.fire('filter', {
+                isFiltered: me[isFiltered],
+                items     : me.items,
+                oldItems,
+                scope     : me
+            })
+        }
     }
 
     /**
@@ -862,7 +1083,7 @@ class Collection extends Base {
      * @returns {Object|null}
      */
     get(key) {
-        return this.map.get(key) || null
+        return this.map.get(key) || (this.trackInternalId && this.internalIdMap?.get(key)) || null
     }
 
     /**
@@ -872,6 +1093,15 @@ class Collection extends Base {
      */
     getAt(index) {
         return this._items[index]
+    }
+
+    /**
+     * Returns the object associated to the internalId, or null if there is none.
+     * @param {String} internalId
+     * @returns {Object|null}
+     */
+    getByInternalId(internalId) {
+        return this.internalIdMap?.get(internalId) || null
     }
 
     /**
@@ -910,13 +1140,31 @@ class Collection extends Base {
     }
 
     /**
+     * Hook to get the internal key of an item.
+     * To be overridden by subclasses (e.g. Store).
+     * @param {Object} item
+     * @returns {String|Number|null}
+     */
+    getInternalKey(item) {
+        return null
+    }
+
+    /**
+     * @param {Object} item
+     * @returns {String|Number}
+     */
+    getKey(item) {
+        return item[this.keyProperty]
+    }
+
+    /**
      * Returns the key for a given index
      * @param {Number} index
      * @returns {Number|String|undefined}
      */
     getKeyAt(index) {
         let item = this._items[index];
-        return item?.[this.keyProperty]
+        return item && this.getKey(item)
     }
 
     /**
@@ -953,7 +1201,7 @@ class Collection extends Base {
      * @returns {Boolean}
      */
     hasItem(item) {
-        return this.map.has(item[this.keyProperty])
+        return this.map.has(this.getKey(item))
     }
 
     /**
@@ -963,7 +1211,7 @@ class Collection extends Base {
      */
     indexOf(key) {
         let me = this;
-        return me._items.indexOf(me.isItem(key) ? key : me.map.get(key))
+        return me._items.indexOf(me.isItem(key) ? key : me.get(key));
     }
 
     /**
@@ -976,12 +1224,29 @@ class Collection extends Base {
     }
 
     /**
+     * Tries to determine the type of the keyProperty by looking at the first item in the collection.
+     * Note that this differs from `data.Store` where this info can be pulled from a `data.Model`.
+     * @returns {String|null} 'int', 'string', etc.
+     */
+    getKeyType() {
+        let me    = this,
+            first = me._items[0];
+
+        if (first) {
+            let key = first[me.keyProperty];
+            return typeof key === 'number' ? 'int' : typeof key
+        }
+
+        return null
+    }
+
+    /**
      * Returns the index for a given key
      * @param {Number|String} key
      * @returns {Number} index (-1 in case no match is found)
      */
     indexOfKey(key) {
-        return this._items.indexOf(this.map.get(key))
+        return this._items.indexOf(this.get(key));
     }
 
     /**
@@ -1030,7 +1295,7 @@ class Collection extends Base {
      */
     isItem(value) {
         // We can not use Neo.isObject() || Neo.isRecord(), since collections can store neo instances too.
-        return typeof value === 'object'
+        return value !== null && typeof value === 'object'
     }
 
     /**
@@ -1095,6 +1360,19 @@ class Collection extends Base {
         me.preventBubbleUp = true;
 
         me.splice(null, opts.removedItems, opts.addedItems)
+    }
+
+    /**
+     * @summary The unfiltered projection's write: the rows its collection's `splice` just applied,
+     * applied here without an event. The projection holds what the collection holds before any
+     * listener runs, and fires nothing of its own — it is part of the mutation, not an observer of it.
+     * @param {Object}   opts
+     * @param {Object[]} [opts.addedItems]
+     * @param {Object[]} [opts.removedItems]
+     * @protected
+     */
+    mirrorMutation({addedItems, removedItems}) {
+        this.splice(null, removedItems, addedItems, true)
     }
 
     /**
@@ -1191,9 +1469,11 @@ class Collection extends Base {
      * @param {Number|null} index
      * @param {Number|Object[]} [removeCountOrToRemoveArray]
      * @param {Object|Object[]} [toAddArray]
+     * @param {Boolean} [silent=false] Applies the mutation without firing `mutate` — the write path of
+     *     the unfiltered projection, which is part of its collection's mutation, never an observer of it
      * @returns {Object} An object containing the addedItems & removedItems arrays
      */
-    splice(index, removeCountOrToRemoveArray, toAddArray) {
+    splice(index, removeCountOrToRemoveArray, toAddArray, silent=false) {
         let me                 = this,
             {keyProperty, map} = me,
             source             = me.getSource(),
@@ -1202,7 +1482,7 @@ class Collection extends Base {
             removedItems       = [],
             removeCountAtIndex = Neo.isNumber(removeCountOrToRemoveArray) ? removeCountOrToRemoveArray : null,
             toRemoveArray      = Array.isArray(removeCountOrToRemoveArray) ? removeCountOrToRemoveArray : null,
-            i, item, key, len, toAddMap;
+            internalId, i, item, key, len, toAddMap;
 
         if (!Neo.isNumber(index) && removeCountAtIndex) {
             Logger.error(me.id + ': If index is not passed, removeCountAtIndex cannot be used')
@@ -1212,17 +1492,26 @@ class Collection extends Base {
 
         if (toRemoveArray && (len = toRemoveArray.length) > 0) {
             if (toAddArray && toAddArray.length > 0) {
-                toAddMap = toAddArray.map(e => e[keyProperty])
+                toAddMap = toAddArray.map(e => me.getKey(e))
             }
 
             for (i=0; i < len; i++) {
                 item = toRemoveArray[i];
-                key  = me.isItem(item) ? item[keyProperty] : item;
+                key  = me.isItem(item) ? me.getKey(item) : item;
 
                 if (map.has(key)) {
                     if (!toAddMap || (toAddMap && toAddMap.indexOf(key) < 0)) {
-                        removedItems.push(items.splice(me.indexOfKey(key), 1)[0]);
-                        map.delete(key)
+                        const removedItem = items.splice(me.indexOfKey(key), 1)[0];
+                        removedItems.push(removedItem);
+                        map.delete(key);
+
+                        if (me.trackInternalId) {
+                            internalId = me.getInternalKey(removedItem);
+
+                            if (internalId) {
+                                me.internalIdMap.delete(internalId)
+                            }
+                        }
                     }
                 }
             }
@@ -1231,13 +1520,22 @@ class Collection extends Base {
             if (index === 0 && removeCountAtIndex === me.count) {
                 removedItems = items;
                 me._items = [];
-                map.clear()
+                map.clear();
+                me.internalIdMap?.clear()
             } else {
                 removedItems = items.splice(index, removeCountAtIndex);
 
                 // For partial removals, iterate and delete individual items from the map
                 removedItems.forEach(e => {
-                    map.delete(e[keyProperty])
+                    map.delete(me.getKey(e));
+
+                    if (me.trackInternalId) {
+                        internalId = me.getInternalKey(e);
+
+                        if (internalId) {
+                            me.internalIdMap.delete(internalId)
+                        }
+                    }
                 })
             }
         }
@@ -1245,16 +1543,35 @@ class Collection extends Base {
         if (toAddArray && (len = toAddArray.length) > 0) {
             for (i=0; i < len; i++) {
                 item = toAddArray[i];
-                key  = item[keyProperty];
 
-                if (!key) {
+                me.itemFactory?.(item);
+
+                key  = me.getKey(item);
+
+                if (key == null) {
                     item[keyProperty] = key = me.keyPropertyIndex;
                     me.keyPropertyIndex--
                 }
 
+                // Check if the item has the symbol defined (e.g., initialized to null via RecordFactory).
+                // We only want to assign the counter to items that opt-in to this feature to support
+                // restoring the original insertion order (e.g., Store.sort() with no args).
+                // This prevents polluting plain objects in standard Collections.
+                if (Object.hasOwn(item, initialIndexSymbol)) {
+                    item[initialIndexSymbol] = me.initialIndexCounter++
+                }
+
                 if (!map.has(key) && !me.isFilteredItem(item)) {
                     addedItems.push(item);
-                    map.set(key, item)
+                    map.set(key, item);
+
+                    if (me.trackInternalId) {
+                        internalId = me.getInternalKey(item);
+
+                        if (internalId) {
+                            me.internalIdMap.set(internalId, item)
+                        }
+                    }
                 }
             }
 
@@ -1276,7 +1593,7 @@ class Collection extends Base {
                 }
 
                 if (me.autoSort && me._sorters.length > 0) {
-                    me.doSort()
+                    me.doSort(undefined, true)
                 }
             }
         }
@@ -1300,13 +1617,48 @@ class Collection extends Base {
             me[countMutations]++
         }
 
+        // The unfiltered projection is PART of the mutation, never a subscriber racing the other
+        // subscribers for it and never an event consumer: it is written here, on every splice —
+        // batched and silent ones included — before anything can observe the mutation, so a listener
+        // (the store's own synchronous `load` included) sees `allItems` holding the batch, and a
+        // record hydrated inside a listener lands in both collections. The payload is the input
+        // rows, because the projection filters nothing itself.
+        me.allItems?.mirrorMutation({addedItems: toAddArray, removedItems});
+
         if (me[updatingIndex] === 0) {
             me.count = me._items.length;
 
-            me.fire('mutate', {
+            me.calcValueBands(index || 0);
+
+            !silent && me.fire('mutate', {
                 addedItems     : toAddArray,
                 preventBubbleUp: me.preventBubbleUp,
-                removedItems   : toRemoveArray || removedItems
+                // Always emit actual removed objects, not input keys. `removedItems` (local) is built
+                // at line 1487-1488 from `items.splice(indexOfKey(key), 1)[0]` — always object-shaped.
+                // The legacy `toRemoveArray || removedItems` fallback emitted the INPUT array, which
+                // contained STRING IDs when remove-by-key was used. Rollback at Database.mjs:451
+                // (`store.add(mutation.removedItems)`) then attempted Symbol-assignment on primitive
+                // strings → TypeError (the transaction-rollback surface failure).
+                //
+                // Consumer-impact V-B-A 2026-05-18 (scope corrected in cross-family review, using
+                // `rg -n "mutate:|on(['\"]mutate" src ai`):
+                //   1. `Database.onNodesMutate` (ai/graph/Database.mjs:378) — consumes via
+                //      `storage.removeNodes` → SQLite.mjs:280 `node.id` extraction. REQUIRES object.
+                //   2. `Database.onEdgesMutate` (ai/graph/Database.mjs:358) — symmetric edge path.
+                //      REQUIRES object.
+                //   3. `Collection.Base.onMutate` (this file L1350) — source-bubble: calls
+                //      `me.splice(null, opts.removedItems, opts.addedItems)`. `splice` handles BOTH
+                //      shapes (L1483: `key = me.isItem(item) ? me.getKey(item) : item`). SHAPE-NEUTRAL.
+                //   4. `Data.Store.onCollectionMutate` (src/data/Store.mjs:1048) — uses
+                //      `opts.addedItems` only; does not touch `removedItems`. PAYLOAD-NEUTRAL.
+                //   5. `Grid.Container.onColumnsMutate` (src/grid/Container.mjs:997) — uses
+                //      `me._columns.items` directly; ignores mutation payload. PAYLOAD-NEUTRAL.
+                //
+                // Net: 2 consumers strictly require object-shape (and previously silently broke or
+                // loudly broke when fed strings); 3 are payload-compatible with either shape. Fix
+                // is structurally narrow-blast — no consumer breaks, 2 previously-silent bugs also
+                // fixed.
+                removedItems   : removedItems
             })
         } else if (!me[silentUpdateMode]) {
             me.cacheUpdate({
@@ -1340,6 +1692,23 @@ class Collection extends Base {
     }
 
     /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            count      : me.count,
+            filters    : me.filters.map(filter => filter.toJSON()),
+            keyProperty: me.keyProperty,
+            sorters    : me.sorters.map(sorter => sorter.toJSON()),
+            sourceId   : me.sourceId
+        }
+    }
+
+    /**
      * Adds one or more elements to the beginning of the collection and returns the new items count
      * @param {Array|Object} item The item(s) to add
      * @returns {Number} the collection count
@@ -1347,6 +1716,32 @@ class Collection extends Base {
     unshift(item) {
         this.splice(0, 0, item);
         return this.count
+    }
+
+    /**
+     * Updates the key property of an item and keeps the map in sync.
+     * Preserves the item's index in the items array (Zero Array Mutation).
+     * @param {Object} item
+     * @param {String|Number} newKey
+     */
+    updateKey(item, newKey) {
+        let me     = this,
+            oldKey = me.getKey(item);
+
+        if (oldKey !== newKey) {
+            me.map.delete(oldKey);
+            item[me.keyProperty] = newKey;
+            me.map.set(newKey, item);
+
+            if (me.allItems) {
+                me.allItems.map.delete(oldKey);
+                me.allItems.map.set(newKey, item);
+            }
+
+            if (me[updatingIndex] === 0) {
+                me.fire('updateKey', {item, newKey, oldKey, scope: me})
+            }
+        }
     }
 }
 

@@ -21,8 +21,8 @@ class Filter extends Base {
      * @static
      */
     static operators = [
-        '==', '===', '!=', '!==', '<', '<=', '>', '>=', 'endsWith', 'excluded', 'included',
-        'isDefined', 'isUndefined', 'like', 'startsWith'
+        '==', '===', '!=', '!==', '<', '<=', '>', '>=', 'doesNotStartWith', 'endsWith', 'excluded',
+        'included', 'isDefined', 'isUndefined', 'like', 'startsWith'
     ]
 
     static config = {
@@ -191,6 +191,10 @@ class Filter extends Base {
             return false
         }
 
+        if (!item) {
+            return true
+        }
+
         if (me._filterBy) {
             return me.filterBy.call(me.scope || me, {
                 allItems,
@@ -215,6 +219,22 @@ class Filter extends Base {
         return !Filter[me._operator](recordValue, filterValue)
     }
 
+    /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            disabled: me.disabled,
+            operator: me.operator,
+            property: me.property,
+            value   : me.value
+        }
+    }
+
     static ['=='] (a, b) {return a == b}
     static ['==='](a, b) {return a === b}
     static ['!='] (a, b) {return a != b}
@@ -223,6 +243,13 @@ class Filter extends Base {
     static ['<='] (a, b) {return a <= b}
     static ['>']  (a, b) {return a > b}
     static ['>='] (a, b) {return a >= b}
+
+    static ['doesNotStartWith'](a, b) {
+        if (!Neo.isString(a)) {a = String(a)}
+        if (!Neo.isString(b)) {b = String(b)}
+
+        return !a?.toLowerCase().startsWith(b?.toLowerCase())
+    }
 
     static ['endsWith'](a, b) {
         if (!Neo.isString(a)) {a = String(a)}

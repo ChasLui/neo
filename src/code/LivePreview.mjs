@@ -2,23 +2,43 @@ import Container    from '../container/Base.mjs';
 import MonacoEditor from '../component/wrapper/MonacoEditor.mjs'
 import TabContainer from '../tab/Container.mjs';
 
-const
-    classNameRegex = /className\s*:\s*['\"]([^'\"]+)['\"]/g,
-    exportRegex    = /export\s+(?:default\s+)?(?:const|let|var|class|function|async\s+function|generator\s+function|async\s+generator\s+function|(\{[\s\S]*?\}))/g,
-    importRegex    = /import\s+(?:([\w-]+)|\{([^}]+)\})\s+from\s+['\"]([^'\"]+)['\"]/;
+const configSymbol = Symbol.for('configSymbol');
 
 /**
+ * @summary A split-view component for real-time code editing and execution.
+ *
+ * This class provides a robust environment for editing source code and viewing the results in real-time.
+ * It integrates the **Monaco Editor** for a rich editing experience and supports multiple languages and execution modes.
+ *
+ * Key features:
+ * - **Multi-Language Support**: Supports 'neomjs' (JS execution) and 'markdown' (rendering).
+ * - **Dynamic Imports**: Utilizes `import()` to lazy-load the Markdown component or Code Executor, optimizing initial load performance.
+ * - **Sandboxed Execution**: Executes Neo.mjs code within a controlled context using `new Function`.
+ * - **Responsive Layout**: collapsible, pop-out support, and configurable views (source vs. preview).
+ *
+ * This component is central to the Neo.mjs learning experience and documentation portal.
+ *
  * @class Neo.code.LivePreview
  * @extends Neo.container.Base
+ * @see Neo.code.executor.Neo
+ * @see Neo.component.Markdown
+ * @see Neo.component.wrapper.MonacoEditor
  */
 class LivePreview extends Container {
     /**
-     * Valid values for iconPosition
+     * Valid values for activeView
      * @member {String[]} activeViews=['preview','source']
      * @protected
      * @static
      */
     static activeViews = ['preview', 'source']
+    /**
+     * Valid values for language
+     * @member {String[]} languages=['markdown','neomjs']
+     * @protected
+     * @static
+     */
+    static languages = ['markdown', 'neomjs']
 
     static config = {
         /**
@@ -49,6 +69,11 @@ class LivePreview extends Container {
          * @member {Boolean} enableFullscreen=true
          */
         enableFullscreen: true,
+        /**
+         * @member {String} language_='neomjs'
+         * @reactive
+         */
+        language_: 'neomjs',
         /**
          * @member {Object|String} layout='fit'
          * @reactive
@@ -82,8 +107,30 @@ class LivePreview extends Container {
          * @reactive
          */
         value_: null,
+        /**
+         * The url for the child app to use for the popout window
+         * @member {String} windowUrl_='./childapps/preview/index.html'
+         * @reactive
+         */
+        windowUrl_: './childapps/preview/index.html'
     }
 
+    /**
+     * @member {Number|null} connectedWindowId=null
+     */
+    connectedWindowId = null
+    /**
+     * @member {Neo.component.Markdown|null} markdownComponent=null
+     */
+    markdownComponent = null
+    /**
+     * @member {Class|null} markdownComponentClass=null
+     */
+    markdownComponentClass = null
+    /**
+     * @member {Neo.code.executor.Neo|null} neoExecutor=null
+     */
+    neoExecutor = null
     /**
      * Link the preview output to different targets
      * @member {Neo.component.Base} previewContainer=null
@@ -106,6 +153,29 @@ class LivePreview extends Container {
     afterSetActiveView(value, oldValue) {
         this.tabContainer.activeIndex = value === 'source' ? 0 : 1
     }
+
+    /**
+     * Triggered after the language config got changed
+     * @param {String} value
+     * @param {String} oldValue
+     * @protected
+     */
+    afterSetLanguage(value, oldValue) {
+        let me = this;
+
+        if (value !== 'markdown') {
+            me.markdownComponent = null
+        }
+
+        me.getItem('editor').language = value === 'neomjs' ? 'javascript' : value;
+
+        // If there is a new pending value for the value config, it will run trigger doRunSource().
+        // This can happen when calling: this.set({language, value})
+        if (oldValue && !Object.hasOwn(me[configSymbol], 'value')) {
+            me.doRunSource()
+        }
+    }
+
 
     /**
      * Triggered after the value config got changed
@@ -131,6 +201,17 @@ class LivePreview extends Container {
     }
 
     /**
+     * Triggered before the language config gets changed
+     * @param {String} value
+     * @param {String} oldValue
+     * @returns {String}
+     * @protected
+     */
+    beforeSetLanguage(value, oldValue) {
+        return this.beforeSetEnumValue(value, oldValue, 'language')
+    }
+
+    /**
      * @param {Object} data
      */
     async collapseExpand(data) {
@@ -148,10 +229,10 @@ class LivePreview extends Container {
             delete me.collapseRect;
 
             Object.assign(vdom.style, {
-                height  : rect.height + 'px',
-                left    : rect.x      + 'px',
-                top     : rect.y      + 'px',
-                width   : rect.width  + 'px'
+                height: rect.height + 'px',
+                left  : rect.x      + 'px',
+                top   : rect.y      + 'px',
+                width : rect.width  + 'px'
             });
 
             me.update();
@@ -199,195 +280,85 @@ class LivePreview extends Container {
      *
      */
     async createPopupWindow() {
-        let me      = this,
-            winData = await Neo.Main.getWindowData(),
-            rect    = await me.getDomRect(me.getReference('preview').id);
+        let me         = this,
+            {windowId} = me,
+            winData    = await Neo.Main.getWindowData({windowId}),
+            rect       = await me.getDomRect(me.getReference('preview').id);
 
         let {height, left, top, width} = rect;
 
-        height -= 50; // popup header in Chrome
-        left   += winData.screenLeft;
-        top    += (winData.outerHeight - winData.innerHeight + winData.screenTop);
+        left += winData.screenLeft;
+        top  += (winData.outerHeight - winData.innerHeight + winData.screenTop);
 
         Neo.Main.windowOpen({
-            url           : `./childapps/preview/index.html?id=${me.id}`,
+            url           : `${me.windowUrl}?id=${me.id}`,
             windowFeatures: `height=${height},left=${left},top=${top},width=${width}`,
+            windowId,
             windowName    : me.id
         })
     }
 
     /**
-     *
+     * @param {...*} args
      */
-    doRunSource() {
+    destroy(...args) {
+        if (this.connectedWindowId) {
+            Neo.Main.windowClose({names: [this.id], windowId: this.windowId})
+        }
+
+        super.destroy(...args)
+    }
+
+    /**
+     * Executes the current source code.
+     *
+     * This method acts as the **execution trigger**. It orchestrates the process by:
+     * 1.  **Validation**: Ensuring source code exists.
+     * 2.  **Execution**:
+     *     - For **Markdown**: Clears the container and adds a new `Neo.component.Markdown` instance.
+     *     - For **Neo.mjs**: Delegates execution to the `Neo.code.executor.Neo` instance.
+     *
+     * @returns {Promise<void>}
+     */
+    async doRunSource() {
         if (this.disableRunSource) {
             return
         }
 
-        let me                = this,
-            {environment}     = Neo.config,
-            container         = me.getPreviewContainer(),
-            source            = me.editorValue || me.value,
-            className         = me.findMainClassName(source),
-            cleanLines        = [],
-            moduleNameAndPath = [],
-            params            = [],
-            vars              = [],
-            codeString, module, promises;
+        let me        = this,
+            container = me.getPreviewContainer(),
+            source    = me.editorValue || me.value; // Use current editor value or initial value
 
-        source.split('\n').forEach(line => {
-            let importMatch = line.match(importRegex);
+        if (!source) return;
 
-            if (importMatch) {
-                let defaultImport = importMatch[1],
-                    namedImports  = importMatch[2]?.split(',').map(name => name.trim()),
-                    path          = importMatch[3],
-                    index;
+        if (me.language === 'markdown') {
+            if (!me.markdownComponentClass) {
+                const module = await import('../component/Markdown.mjs');
+                me.markdownComponentClass = module.default;
+            }
 
-                // We want the non-minified version for code which can not get bundled.
-                if (environment === 'dist/development') {
-                    index = path.lastIndexOf('../');
-
-                    if (index === 0) {
-                        path = '../../../../src/' + path.slice(index + 3)
-                    } else {
-                        path = path.slice(0, index) + '../../../' + path.slice(index + 3)
-                    }
-                }
-
-                // We want the minified version of the code which can not get bundled.
-                else if (environment === 'dist/production') {
-                    index = path.lastIndexOf('../');
-
-                    if (index === 0) {
-                        path = '../../../esm/src/' + path.slice(index + 3)
-                    } else {
-                        path = path.slice(0, index) + '../../esm/' + path.slice(index + 3)
-                    }
-                }
-
-                moduleNameAndPath.push({defaultImport, namedImports, path})
-            } else if (line.match(exportRegex)) {
-                // Skip export statements
+            if (me.markdownComponent && !me.markdownComponent.isDestroyed) {
+                me.markdownComponent.value = source
             } else {
-                cleanLines.push(`    ${line}`)
+                // destroy, silent => merge changes into one update cycle
+                container.removeAll(true, true);
+
+                me.markdownComponent = container.add({
+                    module   : me.markdownComponentClass,
+                    style    : {height: '100%', overflow: 'auto'},
+                    value    : source,
+                    windowUrl: me.windowUrl
+                })
             }
-        });
-
-        // Figure out the parts of the source we'll be running.
-        // * The promises/import() corresponding to the user's import statements
-        // * The vars holding the name of the imported module based on the module name for each import
-        // * The rest of the user-provided source
-        // It'll end up looking like this:
-        // Promise.all([
-        //     import('../../../node_modules/neo.mjs/src/container/Base.mjs'),
-        //     import('../../../node_modules/neo.mjs/src/button/Base.mjs')
-        //   ]).then(([BaseModule, ButtonModule]) => {
-        //       const Base = BaseModule.default;
-        //       const Button = ButtonModule.default;
-        //       // Class declaration goes here...
-        //   });
-        // Making the promise part of the eval seems weird, but it made it easier to
-        // set up the import vars.
-        promises = moduleNameAndPath.map((item, i) => {
-            let moduleAlias = `Module${i}`;
-            params.push(moduleAlias);
-            if (item.defaultImport) {
-                vars.push(`    const ${item.defaultImport} = ${moduleAlias}.default;`);
+        } else {
+            if (!me.neoExecutor) {
+                const module = await import('./executor/Neo.mjs');
+                me.neoExecutor = Neo.create(module.default);
             }
-            if (item.namedImports) {
-                vars.push(`    const {${item.namedImports.join(', ')}} = ${moduleAlias};`);
-            }
-            return `import('${item.path}')`
-        });
 
-        codeString = [
-            'Promise.all([',
-            `    ${promises.join(',\n')}`,
-            `]).then(([${params.join(', ')}]) => {`,
-            `${vars.join('\n')}`,
-            `    ${cleanLines.join('\n')}`,
-            '',
-            `    module = Neo.ns('${className}');`,
-            '',
-            `    if (module && (`,
-            `        Neo.component.Base.isPrototypeOf(module) ||`,
-            `        Neo.functional.component.Base.isPrototypeOf(module)`,
-            `    )) {`,
-            `        container.add({module})`,
-            '    }',
-            '})',
-            '.catch(error => {',
-            '    console.warn("LivePreview Error:", error);',
-            '    container.add({ntype:\'component\', html:error.message});',
-            '})'
-        ].join('\n')
-
-        container.removeAll();
-
-        // We must ensure that classes inside the editor won't get cached, since this disables run-time changes
-        // See: https://github.com/neomjs/neo/issues/5863
-        me.findClassNames(codeString).forEach(item => {
-            let nsArray   = item.split('.'),
-                className = nsArray.pop(),
-                ns        = Neo.ns(nsArray);
-
-            if (ns) {
-                delete ns[className]
-            }
-        });
-
-        try {
-            new Function('container', 'module', codeString)(container, module);
-        } catch (error) {
-            container.add({
-                ntype: 'component',
-                html : error.message
-            })
+            await me.neoExecutor.execute({code: source, container})
         }
     }
-
-    /**
-     * @param {String} sourceCode
-     * @returns {String[]}
-     */
-    findClassNames(sourceCode) {
-        let classNames = [],
-            match;
-
-        while ((match = classNameRegex.exec(sourceCode)) !== null) {
-            classNames.push(match[1])
-        }
-
-        return classNames
-    }
-
-    /**
-     * @param {String} sourceCode
-     * @returns {String|null}
-     */
-    findMainClassName(sourceCode) {
-        let classNames = this.findClassNames(sourceCode),
-            mainName   = null,
-            prioNames  = ['MainContainer', 'MainComponent', 'MainView', 'Main'];
-
-        if (classNames.length > 0) {
-            for (const name of prioNames) {
-                mainName = classNames.find(className => className.endsWith(name));
-                if (mainName) {
-                    break
-                }
-            }
-
-            if (!mainName) {
-                mainName = classNames[classNames.length - 1]
-            }
-        }
-
-        return mainName
-    }
-
-    
 
     /**
      * @returns {Neo.component.Base|null}
@@ -421,7 +392,9 @@ class LivePreview extends Container {
             me.getReference('preview').removeAll()
         }
 
-        me.getReference('popout-window-button').hidden = !isPreview
+        let popoutButton = me.tabContainer.getAction('popout');
+
+        popoutButton && (popoutButton.hidden = !isPreview);
         me.disableRunSource = false;
     }
 
@@ -435,28 +408,39 @@ class LivePreview extends Container {
             items          = [],
             {tabContainer} = me;
 
+        me.editor
+
         if (me.enableFullscreen) {
             items.push({
-                handler: me.collapseExpand.bind(me),
-                iconCls: 'fas fa-expand',
-                ui     : 'ghost'
+                action    : 'fullscreen',
+                contextual: false,
+                handler   : me.collapseExpand.bind(me),
+                iconCls   : 'fas fa-expand',
+                ui        : 'ghost',
+                vdom      : {'aria-label': 'Toggle fullscreen preview'}
             })
         }
 
-        items.push({
-            handler  : me.popoutPreview.bind(me),
-            hidden   : tabContainer.activeIndex !== 1,
-            iconCls  : 'far fa-window-maximize',
-            reference: 'popout-window-button',
-            ui       : 'ghost'
-        });
+        // Only add the popout window button in case we are using shared workers
+        if (Neo.config.useSharedWorkers) {
+            items.push({
+                action    : 'popout',
+                contextual: false,
+                handler   : me.popoutPreview.bind(me),
+                hidden    : tabContainer.activeIndex !== 1,
+                iconCls   : 'far fa-window-maximize',
+                ui        : 'ghost',
+                vdom      : {'aria-label': 'Open preview in a separate window'}
+            });
 
-        items.unshift('->');
+            Neo.currentWorker.on({
+                connect   : me.onWindowConnect,
+                disconnect: me.onWindowDisconnect,
+                scope     : me
+            })
+        }
 
-        // we want to add a normal (non-header) button
-        tabContainer.getTabBar().add(items);
-
-        tabContainer.getTabBar().update();
+        tabContainer.headerActions = items;
 
         tabContainer.on('activeIndexChange', me.onActiveIndexChange, me);
 
@@ -466,15 +450,80 @@ class LivePreview extends Container {
 
     /**
      * @param {Object} data
+     * @param {String} data.value
      */
-    onEditorChange(data) {
+    onEditorChange({value}) {
         let me = this;
 
-        me.editorValue = data.value;
+        me._value = value;
 
-        // We are not using getPreviewContainer(), since we only want to update the LivePreview in case it is visible.
-        if (me.previewContainer) {
-            me.doRunSource()
+        me.editorValue = value;
+
+        me.fire('editorChange', {value});
+
+        me.doRunSource()
+    }
+
+    /**
+     * @param {Object} data
+     * @param {String} data.appName
+     * @param {Number} data.windowId
+     */
+    async onWindowConnect({windowId}) {
+        let me     = this,
+            url    = await Neo.Main.getByPath({path: 'document.URL', windowId}),
+            params = new URL(url).searchParams,
+            id     = params.get('id');
+
+        if (id === me.id) {
+            me.connectedWindowId = windowId;
+
+            let app              = Neo.apps[windowId],
+                mainView         = app.mainView,
+                previewContainer = me.getReference('preview'),
+                {tabContainer}   = me,
+                previewView      = previewContainer.removeAt(0, false),
+                theme            = me.getTheme?.();
+
+            // We overrule the viewport theme on purpose
+            if (theme) {
+                mainView.theme = theme
+            }
+
+            me.previewContainer = mainView;
+            mainView.add(previewView);
+
+            tabContainer.activeIndex = 0; // switch to the source view
+
+            tabContainer.getTabAtIndex(1).disabled = true
+        }
+    }
+
+    /**
+     * @param {Object} data
+     * @param {String} data.appName
+     * @param {Number} data.windowId
+     */
+    async onWindowDisconnect(data) {
+        let me = this;
+
+        if (data.windowId === me.connectedWindowId) {
+            let app              = Neo.apps[data.windowId],
+                mainView         = app.mainView,
+                previewContainer = me.getReference('preview'),
+                {tabContainer}   = me,
+                previewView      = mainView.removeAt(0, false);
+
+            me.previewContainer = null;
+            previewContainer.add(previewView);
+
+            me.disableRunSource = true; // will get reset after the next activeIndex change (async)
+            tabContainer.activeIndex = 1;        // switch to the source view
+
+            tabContainer.getAction('popout').disabled = false;
+            tabContainer.getTabAtIndex(1).disabled = false;
+
+            me.connectedWindowId = null
         }
     }
 
@@ -485,10 +534,7 @@ class LivePreview extends Container {
         let me = this;
 
         data.component.disabled = true;
-        await me.createPopupWindow();
-
-        // this component requires a view controller to manage connected apps
-        me.getController('viewport-controller')?.connectedApps.push(me.id)
+        await me.createPopupWindow()
     }
 }
 

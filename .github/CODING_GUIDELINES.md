@@ -21,6 +21,7 @@ In the long run, we are planning to convert as many of the rules as possible int
 8. Class methods
 9. data.Model fields
 10. Misc
+11. JSDoc type expressions
 
 
 ## 1. General rules
@@ -69,8 +70,17 @@ import Component from '../component/Base.mjs';
 import NeoArray  from '../util/Array.mjs';
 
 /**
+ * @summary The default button component for the Neo.mjs framework.
+ *
+ * This class extends `Neo.component.Base` and offers comprehensive configurations for
+ * text, icons, badges, and event handling. It supports advanced features like
+ * internal routing, external URL redirection, and optional ripple effects on click.
+ * This class serves as the foundation for other specialized button types like
+ * SplitButton, TabHeaderButton, and GridHeaderButton.
+ *
  * @class Neo.button.Base
  * @extends Neo.component.Base
+ * @see Neo.examples.button.base.MainContainer
  */
 class Base extends Component {
     /**
@@ -170,12 +180,12 @@ class Base extends Component {
     }
 }
 
-Neo.applyClassConfig(Base);
-
-export default Base;
-
+export default Neo.setupClass(Base);
 ```
-* (18) Use JSDoc based comments for all top level items as well as top level configs
+
+* (18) Use JSDoc based comments for all top-level items (classes, methods, configs).
+  + For class top-level comments, a `@summary` tag is **mandatory**. It **must** be the first tag and **must** be followed by an empty line, then a detailed description of the class.
+  + Single-line tags like `@class` and `@extends` do not require an empty line after them.
 * (19) Class content order:
   - static configs (ordered chronologically)
   - static config as the last item. This one does not need a comment, but is prefixed with an empty line.
@@ -187,7 +197,7 @@ export default Base;
   - empty line
   - class definition
   - empty line
-  - Neo.applyClassConfig(<ClassName>)
+  - Neo.setupClass(<ClassName>)
   - empty line
   - export statement
   - empty line
@@ -309,7 +319,7 @@ items: [HeaderContainer, {
     reference  : 'tab-container',
     sortable   : true,
     style      : {margin: '10px', marginTop: 0},
-  
+
     items: [{
         module   : () => import('./TableContainer.mjs'),
         reference: 'table-container',
@@ -372,12 +382,13 @@ do get sorted chronologically as well.
 ```javascript
 
 /**
- * @param {Object} data
- * @param {Neo.component.Base} data.component
- * @param {Number} data.rowHeight
- * @param {Number} data.rowsPerItem
- * @param {Number} data.totalHeight
- * @param {Boolean} [silent=false]
+ * Adjusts the total height of the component based on the provided data.
+ * @param {Object}             data             The data object containing height information
+ * @param {Neo.component.Base} data.component   The component to adjust
+ * @param {Number}             data.rowHeight   The height of a single row
+ * @param {Number}             data.rowsPerItem The number of rows per item
+ * @param {Number}             data.totalHeight The total height to set
+ * @param {Boolean}            [silent=false]   True to suppress the update event
  */
 adjustTotalHeight(data, silent=false) {
     let me          = this,
@@ -406,13 +417,24 @@ adjustTotalHeight(data, silent=false) {
 }
 ```
 * (29) Above every class method is one empty line
-* (30) Each class method has JSDoc comments for the params
-  + While doc commons support `@returns` & `@return`, we do stick to `@returns` (consistency)
+* (30) Each class method has JSDoc comments.
+  + **No empty line** allowed between the method description and the first `@param` tag.
+  + `@returns` is used instead of `@return` for consistency.
+  + All `@param` tags must have a description.
+  + Use **Block Formatting**: Vertically align `{Type}`, `parameterName`, and `Description`.
+    + **Type Column Width**: Determined by the longest `{Type}` + 1 space.
+    + **Name Column Width**: Determined by the longest `parameterName` + 1 space.
+    + **Description Column**: Starts exactly at the `Type Column Width` + `Name Column Width` offset.
+  + Do **not** use hyphens (`-`) to separate the parameter name from the description. Use whitespace for alignment.
 * (31) Try to define most (if not all) variables at the top of the method body.
 * (32) Variables do use block formatting
 * (33) Variables are separated by commas (file size)
 * (34) Create variables for every item which you use more than 2 times. (maintainability, readability & file size)
-  + This rule also counts for `this`.
+  + This rule also counts for `this` in bundled runtime-engine code (`src/`, apps, examples and docs-app source)
+    where the `me = this` pattern supports readability and minified file size.
+  + In unbundled Node.js / Agent OS code (`ai/`, `buildScripts/`) prefer direct `this` for new code unless a local
+    callback-binding or readability case makes `me` useful. Existing call sites are grandfathered; clean them up only
+    when editing the surrounding code or via a dedicated follow-up ticket.
 * (35) The framework source code is using `const` very(!) rarely. The only reason is the minified bundle size.
 
 Example:
@@ -476,3 +498,28 @@ fields: [{
   + Bad: `let arr = [1,];`
   + Good: `let obj = {a: 1};`
   + Good: `let arr = [1];`
+
+## 11. JSDoc type expressions
+
+Neo's docs build parses every type expression with `catharsis`, the type parser the jsdoc engine uses, in JSDoc mode. This is the
+Closure/JSDoc grammar, not TypeScript. `node ./buildScripts/util/check-jsdoc-types.mjs` runs the same parser
+before `npm run generate-docs-json`, so fix the linted expression instead of treating the build failure as a
+docs-output problem.
+
+Verified parser outcomes:
+
+| Pattern checked | Catharsis result | Use |
+| --- | --- | --- |
+| `@returns {{value:Object|null}}` | Fails: no-space union inside a record value | `@returns {{value: Object|null}}` or `@returns {{value:(Object|null)}}` |
+| `@param {{name?:String}} data` | Fails: TypeScript optional-key syntax | `@param {Object} data` plus `@param {String} [data.name]` |
+| `@param {(value: String) => Boolean} fn` | Fails: TypeScript arrow-function syntax | `@param {function(String):Boolean} fn` |
+| `@returns {{value: Object|null}}` | Passes | Keep the space after the record colon |
+| `@returns {{value:(Object|null)}}` | Passes | Parenthesize ambiguous unions |
+| `@param {Array.<String>} items` | Passes | Prefer canonical JSDoc generic spelling in docs-facing code |
+| `@param {Object.<String, Number>} totals` | Passes | Prefer canonical JSDoc generic spelling in docs-facing code |
+
+If a type is hard to express in one line, define a named `@typedef` near the class or module and reference that
+name from `@param`, `@returns`, `@member`, or `@property`. The lint currently scans authored `.mjs` files in
+`src`, `ai`, `examples`, `apps`, and `docs/app`. `buildScripts` and `test` remain outside the CI scope because
+they are not consumed by the docs app today; extend the scope only with a ticket that also updates the relevant
+fixtures.

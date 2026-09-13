@@ -43,6 +43,10 @@ class MainContainerController extends ComponentController {
          */
         connectedApps: [],
         /**
+         * @member {Object} connectedAppWindows={}
+         */
+        connectedAppWindows: {},
+        /**
          * @member {Object[]|null} data=null
          */
         data: null,
@@ -94,7 +98,7 @@ class MainContainerController extends ComponentController {
 
         data.forEach(item => {
             if (item.country.includes('"')) {
-                item.country = item.country.replace('"', "\'");
+                item.country = item.country.replace(/"/g, "\'");
             }
 
             item.casesPerOneMillion = item.casesPerOneMillion > item.cases ? 'N/A' : item.casesPerOneMillion || 0;
@@ -174,7 +178,7 @@ class MainContainerController extends ComponentController {
     createPopupWindow(containerReference, url, windowName) {
         let me = this;
 
-        Neo.Main.getWindowData().then(winData => {
+        Neo.Main.getWindowData({windowId: me.windowId}).then(winData => {
             me.component.getDomRect(me.getReference(containerReference).id).then(data => {
                 let {height, left, top, width} = data;
 
@@ -185,6 +189,7 @@ class MainContainerController extends ComponentController {
                 Neo.Main.windowOpen({
                     url           : `../sharedcovid/childapps/${url}/index.html`,
                     windowFeatures: `height=${height},left=${left},top=${top},width=${width}`,
+                    windowId      : me.windowId,
                     windowName
                 })
             })
@@ -200,7 +205,9 @@ class MainContainerController extends ComponentController {
             return this.component
         }
 
-        return Neo.apps[appName].mainView
+        let windowId = this.connectedAppWindows[appName];
+
+        return Neo.apps[windowId]?.mainView
     }
 
     /**
@@ -261,8 +268,9 @@ class MainContainerController extends ComponentController {
      * @param {String} data.appName
      */
     onAppConnect(data) {
-        let me   = this,
-            name = data.appName,
+        let me         = this,
+            name       = data.appName,
+            {windowId} = me,
             style, toolbar, view;
 
         switch (name) {
@@ -280,26 +288,27 @@ class MainContainerController extends ComponentController {
                 view = me.getReference('gallery-container');
                 NeoArray.remove(me.mainTabs, 'gallery');
                 me.activeMainTabIndex--;
-                Neo.Main.editRoute({mainview: me.mainTabs[me.activeMainTabIndex]});
+                Neo.Main.editRoute({mainview: me.mainTabs[me.activeMainTabIndex], windowId});
                 break;
             case 'SharedCovidHelix':
                 view = me.getReference('helix-container');
                 NeoArray.remove(me.mainTabs, 'helix');
                 me.activeMainTabIndex--;
-                Neo.Main.editRoute({mainview: me.mainTabs[me.activeMainTabIndex]});
+                Neo.Main.editRoute({mainview: me.mainTabs[me.activeMainTabIndex], windowId});
                 break;
             case 'SharedCovidMap':
                 view = me.getReference('mapbox-gl-container');
                 NeoArray.remove(me.mainTabs, 'mapboxglmap');
                 me.activeMainTabIndex--;
-                Neo.Main.editRoute({mainview: me.mainTabs[me.activeMainTabIndex]});
+                Neo.Main.editRoute({mainview: me.mainTabs[me.activeMainTabIndex], windowId});
                 break;
         }
 
         if (view) {
             NeoArray.add(me.connectedApps, name);
+            me.connectedAppWindows[name] = data.windowId;
 
-            Neo.apps[name].on('vnodeInitialized', () => {
+            Neo.apps[data.windowId].on('vnodeInitialized', () => {
                 me.timeout(100).then(() => {
                     me.getMainView(name).add(view)
                 })
@@ -321,7 +330,8 @@ class MainContainerController extends ComponentController {
         switch (name) {
             case 'SharedCovid':
                 Neo.Main.windowClose({
-                    names: me.connectedApps,
+                    names   : me.connectedApps,
+                    windowId: me.windowId
                 });
                 break;
             case 'SharedCovidChart':
@@ -362,7 +372,10 @@ class MainContainerController extends ComponentController {
                     break;
             }
 
-            Neo.apps[name].destroy()
+            if (me.connectedAppWindows[name]) {
+                Neo.apps[me.connectedAppWindows[name]]?.destroy();
+                delete me.connectedAppWindows[name]
+            }
         }
     }
 
@@ -517,9 +530,10 @@ class MainContainerController extends ComponentController {
         let me = this;
 
         Neo.main.DomAccess.addScript({
-            async: true,
-            defer: true,
-            src  : 'https://buttons.github.io/buttons.js'
+            async   : true,
+            defer   : true,
+            src     : 'https://buttons.github.io/buttons.js',
+            windowId: me.windowId
         });
 
         me.getReference('tab-container').on('moveTo', me.onTabMove, me)
@@ -671,7 +685,8 @@ class MainContainerController extends ComponentController {
      */
     updateCountryField(data) {
         Neo.Main.editRoute({
-            country: data.record.country
+            country : data.record.country,
+            windowId: this.windowId
         })
     }
 }

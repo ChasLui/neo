@@ -67,6 +67,10 @@ class TableBody extends Component {
          */
         useRowRecordIds: true,
         /**
+         * @member {Boolean} useInternalId=true
+         */
+        useInternalId: true,
+        /**
          * @member {Object} _vdom={tag: 'tbody', cn : []}
          */
         _vdom:
@@ -365,7 +369,7 @@ class TableBody extends Component {
         me.promiseUpdate().then(() => {
             if (selectedRows?.length > 0) {
                 // this logic only works for selection.table.RowModel
-                Neo.main.DomAccess.scrollToTableRow({appName: me.appName, id: selectedRows[0]})
+                Neo.main.DomAccess.scrollToTableRow({id: selectedRows[0], windowId: me.windowId})
             }
         })
     }
@@ -417,7 +421,7 @@ class TableBody extends Component {
      * @returns {String}
      */
     getCellId(record, dataField) {
-        return this.id + '__' + record[this.store.keyProperty] + '__' + dataField
+        return this.id + '__' + this.getRecordId(record) + '__' + dataField
     }
 
     /**
@@ -466,6 +470,10 @@ class TableBody extends Component {
             return record;
         }
 
+        // Check if nodeId is a recordId
+        record = me.store.get(nodeId);
+        if (record) return record;
+
         parentNodes = VDomUtil.getParentNodes(me.vdom, nodeId);
 
         for (node of parentNodes) {
@@ -477,6 +485,14 @@ class TableBody extends Component {
         }
 
         return null
+    }
+
+    /**
+     * @param {Object} record
+     * @returns {String|Number}
+     */
+    getRecordId(record) {
+        return this.useInternalId ? this.store.getInternalId(record) : this.store.getKey(record)
     }
 
     /**
@@ -497,7 +513,7 @@ class TableBody extends Component {
             {store} = me;
 
         if (me.useRowRecordIds) {
-            return `${me.id}__tr__${record[store.keyProperty]}`
+            return `${me.id}__tr__${me.getRecordId(record)}`
         } else {
             index = Neo.isNumber(index) ? index : store.indexOf(record);
             return me.vdom.cn[index]?.id || Neo.getId('tr')
@@ -562,9 +578,19 @@ class TableBody extends Component {
      * @param {Object[]} data.items
      * @param {Number}   [data.total]
      * @protected
+     *
+     * The scroll-to-top nudge is a detached dispatch: it fires 50ms after the mount check, so by
+     * the time the message is sent the body may be destroyed (`core.Base#destroy` rejects pending
+     * timeouts with `Neo.isDestroyed`) or the destination window may be gone (`worker.Base`
+     * rejects with `code: 'NEO_DEAD_PORT'`). Both are expected outcomes of a scroll into somewhere
+     * that no longer exists, not failures to report — and because a store load runs on every
+     * collection mutation, leaving either unhandled turns a ticking feed into one uncaught
+     * rejection per tick. Anything else IS a live failure, and this chain has no caller to
+     * propagate to, so the console is the honest terminal surface.
      */
     onStoreLoad(data) {
-        let me = this;
+        let me         = this,
+            {windowId} = me;
 
         /*
          * Fast path to handle clearing all rows (e.g., store.removeAll()).
@@ -583,7 +609,7 @@ class TableBody extends Component {
             vdomRoot.cn = [];
             me.getVnodeRoot().childNodes = [];
 
-            Neo.applyDeltas(me.appName, {
+            Neo.applyDeltas(windowId, {
                 id         : vdomRoot.id,
                 textContent: ''
             });
@@ -594,13 +620,17 @@ class TableBody extends Component {
         me.createViewData();
 
         if (me.mounted) {
-            me.timeout(50).then(() => {
-                Neo.main.DomAccess.scrollTo({
+            me.timeout(50)
+                .then(() => Neo.main.DomAccess.scrollTo({
                     direction: 'top',
                     id       : me.vdom.id,
-                    value    : 0
+                    value    : 0,
+                    windowId
+                }))
+                .catch(reason => {
+                    reason !== Neo.isDestroyed && reason?.code !== 'NEO_DEAD_PORT' &&
+                        console.error('table.Body: scroll-to-top dispatch failed', {reason, windowId})
                 })
-            })
         }
     }
 

@@ -15,6 +15,11 @@ import Collection from '../collection/Base.mjs';
  *    more focused data for the VDOM worker to process. While the amount of final DOM
  *    modifications remains the same, this aggregation is key to performance.
  *
+ *    **Teleportation (Disjoint Updates):** The manager now supports processing multiple
+ *    disjoint components in a single "Teleportation" batch. This allows deep descendants
+ *    to update in parallel with their ancestors without requiring the ancestor to "bridge"
+ *    the gap, eliminating O(N) overhead for deep updates.
+ *
  * 2. **Asynchronous Flow Control:** Manages the asynchronous nature of VDOM updates, which
  *    are often processed in a worker thread. It ensures that code awaiting an update
  *    (e.g., via a returned Promise) is correctly notified upon completion.
@@ -79,6 +84,20 @@ class VDomUpdate extends Collection {
     }
 
     /**
+     * A Map that tracks the in-flight update status of descendants for each component.
+     * This "Reverse Lookup" map allows ancestor components to check if any of their
+     * descendants are currently updating in O(1) time, without walking the tree downwards.
+     *
+     * Key: ancestorId, Value: Map<descendantId, true>
+     *
+     * This is crucial for the `VdomLifecycle.isChildUpdating` guard, which prevents
+     * race conditions where a parent update might clobber a concurrent child update.
+     *
+     * @member {Map<String, Map<String, Boolean>>} descendantInFlightMap=new Map()
+     * @protected
+     */
+    descendantInFlightMap = new Map()
+    /**
      * A Map that tracks VDOM updates that have been dispatched to the VDOM worker but
      * have not yet completed. This prevents redundant updates for the same component.
      *
@@ -89,11 +108,39 @@ class VDomUpdate extends Collection {
      */
     inFlightUpdateMap = null;
     /**
+     * A Map that stores callbacks to be executed immediately after a component's VDOM update
+     * finishes, but BEFORE the `needsVdomUpdate` check for the next cycle.
+     *
+     * Key: componentId, Value: callback Function
+     *
+     * @member {Map<String, Function>} preUpdateMap=new Map()
+     * @protected
+     */
+    preUpdateMap = new Map()
+    /**
+     * The wedge-watchdog threshold in milliseconds: an in-flight update older than this is
+     * reported as wedged via `console.error`. Updates settle in milliseconds; the
+     * generous default avoids false positives on heavily loaded sessions. Mutable for tests.
+     * @member {Number} watchdogThreshold=5000
+     * @protected
+     */
+    watchdogThreshold = 5000
+    /**
+     * Maps an in-flight component id to its armed watchdog timer id; see
+     * {@link #registerInFlightUpdate} / {@link #unregisterInFlightUpdate}.
+     *
+     * Key: componentId, Value: setTimeout timer id
+     *
+     * @member {Map<String, Number>} watchdogTimerMap=new Map()
+     * @protected
+     */
+    watchdogTimerMap = new Map()
+    /**
      * A Map that stores Promise `resolve` functions associated with a component's update.
      * When a component's VDOM update is finalized, the callbacks for its ID are executed,
      * resolving the Promise returned by the component's `update()` method.
      *
-     * The structure is: `Map<'component-id', [callback1, callback2, ...]>`
+     * The structure is: `Map<'component-id', [{resolve, reject}, ...]>`
      *
      * @member {Map|null} promiseCallbackMap=null
      * @protected
@@ -117,42 +164,74 @@ class VDomUpdate extends Collection {
     }
 
     /**
-     * Registers a callback function to be executed when a specific component's
-     * VDOM update completes. This is the mechanism that resolves the Promise
-     * returned by `Component#update()`.
-     * @param {String}   ownerId  The `id` of the component owning the update.
-     * @param {Function} callback The function to execute upon completion.
+     * Registers a `{resolve, reject}` settlement pair to be settled when a specific
+     * component's VDOM update completes. This is the mechanism that settles the Promise
+     * returned by `Component#promiseUpdate()`: `resolve` fires from `executeCallbacks`
+     * (success), `reject` from `rejectCallbacks` (a failed flight). Either side may be
+     * `undefined` (fire-and-forget `update()` registers neither; a legacy resolve-only
+     * post-update entry registers a `reject`-less pair).
+     * @param {String}    ownerId  The `id` of the component owning the update.
+     * @param {Function} [resolve] Settles the promise on update success.
+     * @param {Function} [reject]  Settles the promise when the flight it is parked on fails.
      */
-    addPromiseCallback(ownerId, callback) {
+    addPromiseCallback(ownerId, resolve, reject) {
         let me = this;
 
         if (!me.promiseCallbackMap.has(ownerId)) {
             me.promiseCallbackMap.set(ownerId, [])
         }
 
-        me.promiseCallbackMap.get(ownerId).push(callback)
+        me.promiseCallbackMap.get(ownerId).push({resolve, reject})
     }
 
     /**
      * Executes all callbacks associated with a completed VDOM update for a given `ownerId`.
      * This method first processes callbacks for any children that were merged into this
      * update cycle, then executes the callbacks for the `ownerId` itself.
+     *
+     * **Teleportation / Batch Support:**
+     * The `processedChildIds` argument is crucial for Disjoint Updates. It ensures we only
+     * execute callbacks for children that were *actually* included in the VDOM payload.
+     * Children that were filtered out (e.g. due to collisions with a parent update) will
+     * NOT have their callbacks executed here; they will be handled by the covering parent's callback.
+     *
      * @param {String} ownerId The `id` of the component whose update has just completed.
      * @param {Object} [data]  Optional data to pass to the callbacks.
+     * @param {Set<String>|null} [processedChildIds] IDs of children actually included in this update.
      */
-    executeCallbacks(ownerId, data) {
+    executeCallbacks(ownerId, data, processedChildIds) {
         let me           = this,
             item         = me.mergedCallbackMap.get(ownerId),
             callbackData = data ? [data] : [];
 
-        if (item) {
-            item.children.forEach((value, key) => {
-                me.executePromiseCallbacks(key, ...callbackData)
-            });
-            me.mergedCallbackMap.remove(item);
+        if (item && processedChildIds) {
+            for (const childId of processedChildIds) {
+                if (item.children.has(childId)) {
+                    me.executePromiseCallbacks(childId, ...callbackData);
+                    item.children.delete(childId)
+                }
+            }
+
+            if (item.children.size === 0) {
+                me.mergedCallbackMap.remove(ownerId)
+            }
         }
 
         me.executePromiseCallbacks(ownerId, ...callbackData)
+    }
+
+    /**
+     * Retrieves and executes the registered Pre-Update callback for a component.
+     * This is called by VdomLifecycle just before checking `needsVdomUpdate`.
+     * @param {String} id The component ID.
+     */
+    executePreUpdates(id) {
+        let callback = this.preUpdateMap.get(id);
+
+        if (callback) {
+            this.preUpdateMap.delete(id);
+            callback()
+        }
     }
 
     /**
@@ -165,8 +244,63 @@ class VDomUpdate extends Collection {
         let me        = this,
             callbacks = me.promiseCallbackMap.get(ownerId);
 
-        callbacks?.forEach(callback => callback(data));
-        me.promiseCallbackMap.delete(ownerId);
+        if (callbacks) {
+            for (let i = 0, len = callbacks.length; i < len; i++) {
+                callbacks[i].resolve?.(data)
+            }
+            me.promiseCallbackMap.delete(ownerId);
+        }
+    }
+
+    /**
+     * Rejects all registered promise callbacks for a given `ownerId` — the error-path twin
+     * of {@link #executePromiseCallbacks}. Fires each parked `reject` (resolve-only / legacy
+     * entries are skipped via optional chaining) and clears the queue.
+     * @param {String} ownerId The `id` of the component whose flight failed.
+     * @param {*}       error   The error to reject the parked promises with.
+     */
+    rejectPromiseCallbacks(ownerId, error) {
+        let me        = this,
+            callbacks = me.promiseCallbackMap.get(ownerId);
+
+        if (callbacks) {
+            for (let i = 0, len = callbacks.length; i < len; i++) {
+                callbacks[i].reject?.(error)
+            }
+            me.promiseCallbackMap.delete(ownerId)
+        }
+    }
+
+    /**
+     * Rejects the promise callbacks for a failed update flight — the error-path twin of
+     * {@link #executeCallbacks}. A failed flight has no `processedChildIds` (nothing was
+     * applied), so every child merged into `ownerId` is rejected alongside the owner.
+     * @param {String} ownerId The `id` of the component whose update flight failed.
+     * @param {*}       error   The error to reject the parked promises with.
+     */
+    rejectCallbacks(ownerId, error) {
+        let me   = this,
+            item = me.mergedCallbackMap.get(ownerId);
+
+        if (item) {
+            for (const childId of item.children.keys()) {
+                me.rejectPromiseCallbacks(childId, error)
+            }
+            me.mergedCallbackMap.remove(ownerId)
+        }
+
+        me.rejectPromiseCallbacks(ownerId, error)
+    }
+
+    /**
+     * Whether any promise callbacks are currently parked for the given `ownerId`. Used by the
+     * update catch to distinguish a genuinely fire-and-forget failure (which must log, since
+     * nothing else surfaces it) from one whose attached promise will reject.
+     * @param {String}  ownerId The component `id`.
+     * @returns {Boolean}
+     */
+    hasPromiseCallbacks(ownerId) {
+        return this.promiseCallbackMap.has(ownerId)
     }
 
     /**
@@ -190,7 +324,7 @@ class VDomUpdate extends Collection {
             newDepth;
 
         if (item) {
-            item.children.forEach(value => {
+            for (const value of item.children.values()) {
                 if (value.childUpdateDepth === -1) {
                     newDepth = -1
                 } else {
@@ -203,12 +337,23 @@ class VDomUpdate extends Collection {
                 } else if (maxDepth !== -1) {
                     maxDepth = Math.max(maxDepth, newDepth)
                 }
-            });
+            }
 
             return maxDepth
         }
 
         return null
+    }
+
+    /**
+     * Checks if a component has any descendants currently undergoing a VDOM update.
+     * This method is used by `VdomLifecycle` to detect potential race conditions
+     * before starting a parent update.
+     * @param {String} ownerId The component ID to check.
+     * @returns {Boolean} True if any descendant is in-flight.
+     */
+    hasInFlightDescendants(ownerId) {
+        return this.descendantInFlightMap.has(ownerId)
     }
 
     /**
@@ -221,17 +366,81 @@ class VDomUpdate extends Collection {
     }
 
     /**
-     * Returns a Set of child component IDs that have been merged into a parent's update cycle.
-     * This is used by the parent to know which children it is responsible for updating.
+     * Returns a Set of child component IDs that have been merged into a parent's update cycle,
+     * PLUS all intermediate "Bridge" components (ancestors) required to reach them.
+     *
+     * This set serves as an "AllowList" for TreeBuilder. When a parent updates with depth > 1,
+     * TreeBuilder will use this set to perform **Sparse Tree Generation**:
+     * 1. Components in this set are expanded (traversed).
+     * 2. Components NOT in this set are pruned (sent as placeholders), even if the depth allows expansion.
+     *
+     * This optimization allows clean siblings to be skipped, reducing payload size and enabling parallelism.
+     *
      * @param {String} ownerId The `id` of the parent component.
-     * @returns {Set<String>|null} A Set containing the IDs of the merged children, or `null`.
+     * @returns {Set<String>|null} A Set containing IDs of merged children AND bridge ancestors, or `null`.
      */
     getMergedChildIds(ownerId) {
         const item = this.mergedCallbackMap.get(ownerId);
+
         if (item) {
-            return new Set(item.children.keys())
+            const ids = new Set(item.children.keys());
+
+            // Add Bridge Paths: Walk up from each merged child to the owner
+            for (const [childId, meta] of item.children) {
+                if (meta.distance > 1) {
+                    let component = Neo.getComponent(childId);
+
+                    while (component && component.parentId && component.parentId !== ownerId) {
+                        component = Neo.getComponent(component.parentId);
+                        if (component) {
+                            ids.add(component.id)
+                        }
+                    }
+                }
+            }
+
+            return ids
         }
+
         return null
+    }
+
+    /**
+     * Widens the recorded depth of an update that is ALREADY in flight.
+     *
+     * `registerInFlightUpdate` records the depth once, when the cycle starts. The payload is built
+     * later, from `component.updateDepth` read live after a macrotask yield — and `Component#show()`
+     * sets `parent.updateDepth = -1` in exactly that window, because a floating widget mounting into
+     * its parent needs the full tree. The escalation is correct and must not be undone.
+     *
+     * What was wrong is that only the payload learned about it. {@link
+     * Neo.mixin.VdomLifecycle#isParentUpdating} and `hasUpdateCollision` both read the registry, so
+     * every consumer of the collision contract is answered from a scope the payload no longer has.
+     *
+     * What that incoherence goes on to cause is deliberately NOT asserted anywhere in this lane: a
+     * second overlapping flight was hypothesised and measured NOT to occur, because something further
+     * down still queues the sibling write. That absorber is unidentified.
+     *
+     * **This only ever widens.** It mirrors `beforeSetUpdateDepth`'s monotonic contract (-1 absorbs,
+     * otherwise `Math.max`), so the recorded scope can never shrink below what the collision check
+     * has already promised, and a payload can never lose a subtree because of it. The sole effect of
+     * being wrong here is more serialization, never a missing node.
+     *
+     * A component with no entry is not in flight and is left alone — this must not create one.
+     * @param {String} ownerId     The `id` of the component owning the update.
+     * @param {Number} updateDepth The escalated depth.
+     */
+    escalateInFlightUpdate(ownerId, updateDepth) {
+        const current = this.inFlightUpdateMap.get(ownerId);
+
+        if (current === undefined) return;
+
+        // No watchdog re-arm and no descendant re-registration: the flight is the same flight, and
+        // re-arming would hand a wedged component a fresh timeout on every escalation.
+        this.inFlightUpdateMap.set(
+            ownerId,
+            current === -1 || updateDepth === -1 ? -1 : Math.max(updateDepth, current)
+        )
     }
 
     /**
@@ -241,13 +450,62 @@ class VDomUpdate extends Collection {
      * @param {Number} updateDepth The depth of the in-flight update.
      */
     registerInFlightUpdate(ownerId, updateDepth) {
-        this.inFlightUpdateMap.set(ownerId, updateDepth)
+        this.inFlightUpdateMap.set(ownerId, updateDepth);
+
+        // Watchdog: an in-flight update resolves in milliseconds. One that does not is a wedged
+        // component — its flag blocks every own update and its registry entry yields every ancestor
+        // update, while nothing ever errors (a lost reply once froze a component for 25 minutes,
+        // silently). A permanently wedged component must scream; the timer is cleared on unregister,
+        // so a healthy update never pays more than one (cancelled) setTimeout.
+        this.#armWatchdog(ownerId);
+
+        // Register this component as an in-flight descendant for all its parents
+        const parentIds = Neo.manager.Component.getParentIds(Neo.getComponent(ownerId));
+
+        for (let i = 0, len = parentIds.length; i < len; i++) {
+            let parentId = parentIds[i],
+                map      = this.descendantInFlightMap.get(parentId);
+
+            if (!map) {
+                map = new Map();
+                this.descendantInFlightMap.set(parentId, map)
+            }
+
+            map.set(ownerId, true)
+        }
+    }
+
+    /**
+     * Arms the wedge watchdog for one in-flight update; see {@link #registerInFlightUpdate}.
+     * Extracted for testability — specs can shrink {@link #watchdogThreshold}.
+     * @param {String} ownerId The `id` of the component owning the update.
+     * @private
+     */
+    #armWatchdog(ownerId) {
+        let me = this;
+
+        clearTimeout(me.watchdogTimerMap.get(ownerId));
+
+        me.watchdogTimerMap.set(ownerId, setTimeout(() => {
+            me.watchdogTimerMap.delete(ownerId);
+            console.error(
+                `vdom update wedged: "${ownerId}" has been in-flight for over ${me.watchdogThreshold}ms. ` +
+                'Its reply was likely lost — the component will not update again, and ancestor updates will yield to it. ' +
+                'See https://github.com/neomjs/neo/issues/12946'
+            )
+        }, me.watchdogThreshold))
     }
 
     /**
      * Registers a child's update request to be merged into its parent's update cycle.
      * This is called by a child component when it determines it can delegate its update
-     * to an ancestor.
+     * to an ancestor (see `VdomLifecycle.mergeIntoParentUpdate`).
+     *
+     * **Merging Logic:**
+     * Merging reduces VDOM worker traffic by bundling multiple component updates into
+     * a single message. The child effectively "cancels" its own standalone update and
+     * piggybacks on the parent's pending update.
+     *
      * @param {String} ownerId          The `id` of the parent component that will own the merged update.
      * @param {String} childId          The `id` of the child component requesting the merge.
      * @param {Number} childUpdateDepth The update depth required by the child.
@@ -284,9 +542,20 @@ class VDomUpdate extends Collection {
     }
 
     /**
+     * Registers a callback to be executed for a component immediately after its current
+     * VDOM update finishes, but before the next update cycle begins.
+     * @param {String} id The component ID.
+     * @param {Function} callback
+     */
+    registerPreUpdate(id, callback) {
+        this.preUpdateMap.set(id, callback)
+    }
+
+    /**
      * Triggers all pending updates that were queued to run after the specified `ownerId`'s
-     * update has completed.
-     * @param {String} ownerId The `id` of the component whose update has just finished.
+     * update has settled — resolved or rejected. A waiter runs its own flight either way, so a
+     * failure upstream never leaves it suspended on a completion that will not come.
+     * @param {String} ownerId The `id` of the component whose update has just settled.
      */
     triggerPostUpdates(ownerId) {
         let me   = this,
@@ -294,14 +563,15 @@ class VDomUpdate extends Collection {
             component;
 
         if (item) {
-            item.children.forEach(entry => {
+            for (let i = 0, len = item.children.length; i < len; i++) {
+                let entry = item.children[i];
                 component = Neo.getComponent(entry.childId);
 
                 if (component) {
-                    entry.resolve && me.addPromiseCallback(component.id, entry.resolve);
+                    (entry.resolve || entry.reject) && me.addPromiseCallback(component.id, entry.resolve, entry.reject);
                     component.update()
                 }
-            });
+            }
 
             me.postUpdateQueueMap.remove(item)
         }
@@ -313,7 +583,24 @@ class VDomUpdate extends Collection {
      * @param {String} ownerId The `id` of the component owning the update.
      */
     unregisterInFlightUpdate(ownerId) {
-        this.inFlightUpdateMap.delete(ownerId)
+        this.inFlightUpdateMap.delete(ownerId);
+
+        // Disarm the wedge watchdog — the update settled (resolve OR reject), so it is not wedged.
+        clearTimeout(this.watchdogTimerMap.get(ownerId));
+        this.watchdogTimerMap.delete(ownerId);
+
+        // Remove this component from the in-flight descendant maps of all its parents
+        // We need to iterate all registered ancestors to ensure we catch cases where
+        // the component moved (re-parented) during the update.
+        for (const [parentId, map] of this.descendantInFlightMap) {
+            if (map.has(ownerId)) {
+                map.delete(ownerId);
+
+                if (map.size === 0) {
+                    this.descendantInFlightMap.delete(parentId)
+                }
+            }
+        }
     }
 }
 

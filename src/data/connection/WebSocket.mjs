@@ -1,20 +1,11 @@
-import Base                from '../../core/Base.mjs';
+import Base                from './Base.mjs';
 import {createInterceptor} from '../../util/Function.mjs';
-import Observable          from '../../core/Observable.mjs';
 
 /**
  * @class Neo.data.connection.WebSocket
- * @extends Neo.core.Base
- * @mixes Neo.core.Observable
+ * @extends Neo.data.connection.Base
  */
 class Socket extends Base {
-    /**
-     * True automatically applies the core.Observable mixin
-     * @member {Boolean} observable=true
-     * @static
-     */
-    static observable = true
-
     static config = {
         /**
          * @member {String} className='Neo.data.connection.WebSocket'
@@ -26,6 +17,10 @@ class Socket extends Base {
          * @protected
          */
         ntype: 'socket-connection',
+        /**
+         * @member {Function} backoffStrategy=attempt=>Math.min(1000*Math.pow(2,attempt-1),30000)
+         */
+        backoffStrategy: attempt => Math.min(1000 * Math.pow(2, attempt - 1), 30000),
         /**
          * @member {WebSocket|null} socket_=null
          * @protected
@@ -61,6 +56,11 @@ class Socket extends Base {
      * @member {String|null} serverAddress=null
      */
     serverAddress = null
+    /**
+     * @member {Object} streamCallbacks={}
+     * @protected
+     */
+    streamCallbacks = {}
 
     /**
      * @param {Object} config
@@ -74,19 +74,36 @@ class Socket extends Base {
      * @param {Function} callback
      * @param {Object} scope
      */
-    attemptReconnect(callback, scope) {
+    async attemptReconnect(callback, scope) {
         let me = this;
 
         me.reconnectAttempts++;
 
         if (me.reconnectAttempts < me.maxReconnectAttempts) {
-            me.createSocket();
+            const delay = me.backoffStrategy(me.reconnectAttempts);
 
-            callback && me.on('open', {
-                callback,
-                scope : scope || me,
-                single: true
-            })
+            me.fire('reconnecting', {
+                attempt    : me.reconnectAttempts,
+                maxAttempts: me.maxReconnectAttempts,
+                delay
+            });
+
+            console.log(`WebSocket reconnect attempt ${me.reconnectAttempts}/${me.maxReconnectAttempts} in ${delay}ms`);
+
+            await me.timeout(delay);
+
+            if (!me.isDestroyed) {
+                me.createSocket();
+
+                callback && me.on('open', {
+                    callback,
+                    scope : scope || me,
+                    single: true
+                })
+            }
+        } else {
+            console.error('Max reconnection attempts reached');
+            me.fire('reconnect_failed')
         }
     }
 
@@ -171,14 +188,20 @@ class Socket extends Base {
      * @param {Boolean}    wasClean Indicates whether or not the connection was cleanly closed.
      */
     onClose(event, reason, wasClean) {
-        console.log('onClose', event, reason, wasClean)
+        this.fire('close', {event, reason, wasClean});
+
+        // Auto-reconnect on abnormal closure
+        if (!wasClean || event.code !== 1000) {
+            console.warn('WebSocket closed abnormally, attempting reconnect...');
+            this.attemptReconnect()
+        }
     }
 
     /**
      *
      */
-    onError() {
-        console.log('onError', arguments)
+    onError(error) {
+        this.fire('error', {error})
     }
 
     /**
@@ -188,9 +211,18 @@ class Socket extends Base {
         let me   = this,
             data = JSON.parse(event.data);
 
-        if (data.mId) {
+        me.fire('message', {data});
+
+        if (data.mId && me.messageCallbacks[data.mId]) {
             me.messageCallbacks[data.mId].resolve(data.data);
             delete me.messageCallbacks[data.mId]
+        } else if (data.method && me.streamCallbacks[data.method]) {
+            me.streamCallbacks[data.method](data.data || data)
+        } else if (data.stream && me.streamCallbacks[data.stream]) {
+            me.streamCallbacks[data.stream](data.data || data)
+        } else {
+            // Unsolicited Push Data (Progressive Hydration)
+            me.fire('push', data.data || data)
         }
     }
 
@@ -198,6 +230,7 @@ class Socket extends Base {
      *
      */
     onOpen() {
+        this.reconnectAttempts = 0;
         this.fire('open', {scope: this})
     }
 
@@ -214,6 +247,26 @@ class Socket extends Base {
             me.sendMessage({data, mId: me.messageId});
             me.messageId++
         })
+    }
+
+    /**
+     * @param {Object} data
+     * @param {Function} callback
+     */
+    registerStream(data, callback) {
+        let me       = this,
+            streamId = data.method; // Based on remotes-api.json, the key is the method name
+
+        me.streamCallbacks[streamId] = callback;
+        me.sendMessage(data)
+    }
+
+    /**
+     * @param {Object} data
+     */
+    unregisterStream(data) {
+        let streamId = data.method;
+        delete this.streamCallbacks[streamId]
     }
 
     /**

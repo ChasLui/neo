@@ -1,6 +1,6 @@
-import fs      from 'fs-extra';
-import path    from 'path';
-import webpack from 'webpack';
+import fs                        from 'fs-extra';
+import path                      from 'path';
+import workerContextRebasePlugin from '../workerContextRebasePlugin.mjs';
 
 const cwd            = process.cwd(),
       requireJson    = path => JSON.parse(fs.readFileSync((path))),
@@ -29,12 +29,12 @@ export default env => {
         entry,
         target : 'webworker',
 
+        experiments: {
+            outputModule: true
+        },
+
         plugins: [
-            new webpack.ContextReplacementPlugin(/.*/, context => {
-                if (!insideNeo && context.context.includes('/src/worker')) {
-                    context.request = '../../' + context.request;
-                }
-            })
+            workerContextRebasePlugin(insideNeo)
         ],
 
         output: {
@@ -48,7 +48,9 @@ export default env => {
                 }
             },
 
-            path: path.resolve(cwd, buildTarget.folder)
+            library   : {type: 'module'},
+            path      : path.resolve(cwd, buildTarget.folder),
+            publicPath: 'auto'
         }
     }
 };

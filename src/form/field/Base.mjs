@@ -341,7 +341,7 @@ class Field extends Component {
      * @param {Object} data
      */
     onFocusEnter(data) {
-        super.onFocusLeave(data);
+        super.onFocusEnter(data);
 
         if (this.isTouchedEvent === 'focusEnter') {
             this.isTouched = true
@@ -393,6 +393,23 @@ class Field extends Component {
      */
     validate(silent=true) {
         return true
+    }
+    /**
+     * Serializes the field into a JSON-compatible object.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            formGroup: me.formGroup,
+            isDirty  : me.isDirty,
+            isTouched: me.isTouched,
+            isValid  : me.isValid(),
+            name     : me.name,
+            value    : me.value
+        }
     }
 }
 

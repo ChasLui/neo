@@ -26,7 +26,7 @@ class ViewportController extends Controller {
             {windowId}                 = me,
             {config, windowConfigs}    = Neo,
             {environment}              = config,
-            firstWindowId              = parseInt(Object.keys(windowConfigs)[0]),
+            firstWindowId              = Object.keys(windowConfigs)[0],
             {basePath}                 = windowConfigs[firstWindowId],
             widget                     = me.getReference('controls-panel'),
             winData                    = await Neo.Main.getWindowData({windowId}),
@@ -73,7 +73,7 @@ class ViewportController extends Controller {
             {appName} = data;
 
         if (appName === 'GalleryControls') {
-            let {mainView} = Neo.apps[appName];
+            let {mainView} = Neo.apps[data.windowId];
 
             me.connectedApps.push(appName);
 
@@ -93,9 +93,8 @@ class ViewportController extends Controller {
             {appName, windowId} = data;
 
         if (appName === 'GalleryControls') {
-            me.getReference('header-toolbar').hidden = false;
-
-            me.component.add(me.getReference('controls-panel'))
+            me.component.add(me.getReference('controls-panel'));
+            me.getReference('header-toolbar').hidden = false
         }
         // Close popup windows when closing or reloading the main window
         else if (appName === 'Neo.examples.component.multiWindowCoronaGallery') {

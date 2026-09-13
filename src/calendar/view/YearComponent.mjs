@@ -198,7 +198,15 @@ class YearComponent extends Component {
 
         me.addDomListeners([
             {click: me.onNavButtonClick, delegate: '.neo-nav-button', scope: me},
-            {wheel: me.onWheel, scope: me}
+            {
+                scope: me,
+                wheel: {
+                    bubble : false,
+                    fn     : me.onWheel,
+                    local  : true,
+                    passive: false
+                }
+            }
         ]);
 
         if (me.calendarStore.getCount() > 0 && me.eventStore.getCount() > 0) {
@@ -767,7 +775,7 @@ class YearComponent extends Component {
 
         currentDate.setFullYear(currentDate.getFullYear() + (data.path[0].cls.includes('neo-next-button') ? 1 : -1));
 
-        me.currentDate = currentDate
+        me.getStateProvider().setData({currentDate})
     }
 
     /**
@@ -780,7 +788,7 @@ class YearComponent extends Component {
 
             currentDate.setFullYear(currentDate.getFullYear() + (data.deltaY > 0 ? 1 : -1));
 
-            me.currentDate = currentDate
+            me.getStateProvider().setData({currentDate})
         }
     }
 

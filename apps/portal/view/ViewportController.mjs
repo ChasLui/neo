@@ -1,9 +1,17 @@
 import Controller        from '../../../src/controller/Component.mjs';
 import CubeLayout        from '../../../src/layout/Cube.mjs';
 import NeoArray          from '../../../src/util/Array.mjs';
-import {getSearchParams} from '../Util.mjs';
+import SeoService        from '../service/Seo.mjs';
 
 /**
+ * @summary The main controller for the portal's viewport.
+ *
+ * This controller is the central hub for the portal application. It is responsible for:
+ * - **Top-Level Routing:** It uses the `routes` config to map the main URL hash changes (e.g., /home, /learn, /blog) to specific methods, which in turn control which main view is active. It's important to note that while this controller handles the top-level navigation, child views can implement their own nested routing logic (see `Portal.view.learn.MainContainerController` for an example).
+ * - **Layout Management:** It manages the main content area's layout, including the "mixed" mode which uses a CubeLayout for slick transitions between views.
+ * - **SEO:** It coordinates with the `DocumentHead` main thread addon to update the document's title and meta tags on each route change, ensuring the application is SEO-friendly.
+ * - **Multi-Window Coordination:** It handles the disconnection of child windows, such as the live code example previews.
+ *
  * @class Portal.view.ViewportController
  * @extends Neo.controller.Component
  */
@@ -46,13 +54,14 @@ class ViewportController extends Controller {
          */
         routes: {
             '/about-us'         : 'onAboutUsRoute',
-            '/blog'             : 'onBlogRoute',
             '/docs'             : 'onDocsRoute',
             '/examples'         : 'onExamplesRoute',
             '/examples/{itemId}': 'onExamplesRoute',
             '/home'             : 'onHomeRoute',
             '/learn'            : 'onLearnRoute',
             '/learn/{*itemId}'  : 'onLearnRoute',
+            '/news'             : 'onNewsRoute',
+            '/news/{*itemId}'   : 'onNewsRoute',
             '/services'         : 'onServicesRoute'
         },
         /**
@@ -138,6 +147,9 @@ class ViewportController extends Controller {
     }
 
     /**
+     * The route handlers (e.g., onAboutUsRoute, onBlogRoute) are now only responsible for
+     * setting the main content index. The logic for updating the document head is centralized
+     * in the onHashChange method.
      * @param {Object} params
      * @param {Object} value
      * @param {Object} oldValue
@@ -151,83 +163,18 @@ class ViewportController extends Controller {
      * @param {String} data.appName
      * @param {Number} data.windowId
      */
-    async onAppConnect(data) {
-        let {appName, windowId} = data,
-            app                 = Neo.apps[appName],
-            mainView            = app.mainView;
-
-        if (appName === 'PortalPreview') {
-            let searchString    = await Neo.Main.getByPath({path: 'location.search', windowId}),
-                livePreviewId   = getSearchParams(searchString).id,
-                livePreview     = Neo.getComponent(livePreviewId),
-                sourceContainer = livePreview.getReference('preview'),
-                {tabContainer}  = livePreview,
-                sourceView      = sourceContainer.removeAt(0, false);
-
-            livePreview.previewContainer = mainView;
-            mainView.add(sourceView);
-
-            tabContainer.activeIndex = 0; // switch to the source view
-
-            tabContainer.getTabAtIndex(1).disabled = true
-        }
-    }
-
-    /**
-     * @param {Object} data
-     * @param {String} data.appName
-     * @param {Number} data.windowId
-     */
-    async onAppDisconnect(data) {
-        let {appName, windowId} = data,
-            app                 = Neo.apps[appName],
-            mainView            = app.mainView;
-
-        // Closing a code preview window needs to drop the preview back into the related main app
-        if (appName === 'PortalPreview') {
-            let searchString    = await Neo.Main.getByPath({path: 'location.search', windowId}),
-                livePreviewId   = getSearchParams(searchString).id,
-                livePreview     = Neo.getComponent(livePreviewId),
-                sourceContainer = livePreview.getReference('preview'),
-                {tabContainer}  = livePreview,
-                sourceView      = mainView.removeAt(0, false);
-
-            livePreview.previewContainer = null;
-            sourceContainer.add(sourceView);
-
-            livePreview.disableRunSource = true; // will get reset after the next activeIndex change (async)
-            tabContainer.activeIndex = 1;        // switch to the source view
-
-            livePreview.getReference('popout-window-button').disabled = false;
-            tabContainer.getTabAtIndex(1).disabled = false
-        }
+    async onAppDisconnect({appName, windowId}) {
         // Close popup windows when closing or reloading the main window
-        else if (appName === 'Portal') {
+        if (appName === 'Portal') {
             Neo.Main.windowCloseAll({windowId})
         }
     }
 
     /**
-     * @param {Object[]} records
-     */
-    onBlogPostStoreLoad(records) {
-        this.getReference('blog-header-button').badgeText = records.length + ''
-    }
-
-    /**
-     * @param {Object} params
-     * @param {Object} value
-     * @param {Object} oldValue
-     */
-    onBlogRoute(params, value, oldValue) {
-        this.setMainContentIndex(2)
-    }
-
-    /**
      * @param {Object} data
      */
-    onBlogSearchFieldChange(data) {
-        this.getReference('blog-list').filterItems(data)
+    onMediumSearchFieldChange(data) {
+        this.getReference('medium-list').filterItems(data)
     }
 
     /**
@@ -239,9 +186,19 @@ class ViewportController extends Controller {
         let me = this;
 
         Neo.currentWorker.on({
-            connect   : me.onAppConnect,
             disconnect: me.onAppDisconnect,
             scope     : me
+        });
+
+        Neo.main.addon.LocalStorage.readLocalStorageItem({
+            key     : 'portalTheme',
+            windowId: me.windowId
+        }).then(({value}) => {
+            if (value) {
+                me.setTheme(value, false)
+            } else if (Neo.config.prefersDarkTheme) {
+                me.setTheme('neo-theme-neo-dark', false)
+            }
         })
     }
 
@@ -261,6 +218,20 @@ class ViewportController extends Controller {
      */
     onExamplesRoute(params, value, oldValue) {
         this.setMainContentIndex(4)
+    }
+
+    /**
+     * This is the central handler for all route changes. It is now responsible for delegating
+     * the document's head metadata (title and description) updates to the `Portal.service.Seo` service.
+     * @param {Object} value               The new route object.
+     * @param {String} value.hashString    The new hash string.
+     * @param {Object} oldValue            The previous route object.
+     * @param {String} oldValue.hashString The previous hash string.
+     * @returns {Promise<void>}
+     */
+    async onHashChange(value, oldValue) {
+        await super.onHashChange(value, oldValue);
+        SeoService.onRouteChanged(value)
     }
 
     /**
@@ -286,11 +257,50 @@ class ViewportController extends Controller {
      * @param {Object} value
      * @param {Object} oldValue
      */
+    onNewsRoute(params, value, oldValue) {
+        this.setMainContentIndex(2)
+    }
+
+    /**
+     * @param {Object} params
+     * @param {Object} value
+     * @param {Object} oldValue
+     */
     onServicesRoute(params, value, oldValue) {
         this.setMainContentIndex(3)
     }
 
     /**
+     * @param {Object} data
+     */
+    async onSwitchTheme(data) {
+        let me       = this,
+            viewport = me.component,
+            oldTheme = viewport.theme || 'neo-theme-neo-light',
+            newTheme = oldTheme === 'neo-theme-neo-light' ? 'neo-theme-neo-dark' : 'neo-theme-neo-light';
+
+        // The reveal geometry belongs to the realm that owns the DOM: the App worker knows where
+        // the pointer was, not how a pseudo-element resolves a length. Passing the raw coordinates
+        // keeps the unit decision in one engine place instead of one copy per app.
+        //
+        // The catch is the decorative promise kept. The engine resolves rather than rejects — no
+        // API returns false, a failed reveal is caught inside — but this is a REMOTE method, and
+        // the transport can reject for reasons the callee never sees. Without this, a rejected
+        // round trip would skip the theme change entirely and leave the button doing nothing at
+        // all, which is a worse outcome than the missing animation it was meant to guard.
+        await Neo.main.DomAccess.startViewTransition({
+            delay   : 100,
+            reveal  : {x: data?.clientX, y: data?.clientY},
+            windowId: me.windowId
+        }).catch(() => {});
+
+        me.setTheme(newTheme)
+    }
+
+    /**
+     * This method orchestrates the visual transition between the main content cards.
+     * It uses a "mixed" layout mode, which temporarily switches to a CubeLayout for
+     * a 3D transition effect, and then back to a CardLayout for performance.
      * @param {Number} index
      */
     async setMainContentIndex(index) {
@@ -344,6 +354,30 @@ class ViewportController extends Controller {
     }
 
     /**
+     * @param {String} theme
+     * @param {Boolean} [updateStorage=true]
+     */
+    setTheme(theme, updateStorage=true) {
+        let me      = this,
+            btn     = me.getReference('theme-switch-button'),
+            iconCls = theme === 'neo-theme-neo-dark' ? 'fa-solid fa-sun' : 'fa-solid fa-moon';
+
+        me.component.theme = theme;
+
+        if (btn) {
+            btn.iconCls = iconCls
+        }
+
+        if (updateStorage) {
+            Neo.main.addon.LocalStorage.updateLocalStorageItem({
+                key     : 'portalTheme',
+                value   : theme,
+                windowId: me.windowId
+            })
+        }
+    }
+
+    /**
      *
      */
     async updateHeaderToolbar() {
@@ -370,6 +404,16 @@ class ViewportController extends Controller {
             }
 
             headerSocialIcons.hidden = hidden
+        }
+
+        if (Neo.isNumber(activeIndex)) {
+            let headerCanvas = me.getReference('header-canvas'),
+                refs         = ['home-button', 'learn-button', 'news-header-button', 'services-button', 'examples-button'],
+                activeBtn    = me.getReference(refs[activeIndex]);
+
+            if (headerCanvas) {
+                headerCanvas.activeId = activeBtn?.id || null
+            }
         }
     }
 }

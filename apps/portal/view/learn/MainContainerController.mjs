@@ -50,34 +50,6 @@ class MainContainerController extends Controller {
         })
     }
 
-    /**
-     * @param {Object} data
-     * @returns {Promise<void>}
-     */
-    async onContentEdit(data) {
-        const vm = this.getStateProvider();
-        console.log(data);
-        const editorConfig = vm.getData('editorConfig');
-        const subDir = vm.getData('deck')
-        if (!editorConfig || !subDir) return;
-
-        const filePath = `${editorConfig.root}/${subDir}/pages/${data.record.id}.md`;
-
-        await fetch('http://localhost:3000/openInEditor', {
-            method: 'POST',
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({path: filePath, editor: editorConfig.editor})
-        })
-    }
-
-    /**
-     * @param {Object} data
-     */
-    onContentRefresh(data) {
-        this.getReference('tree').doFetchContent(data.record)
-    }
 
     /**
      * @param {Object} data
@@ -125,16 +97,41 @@ class MainContainerController extends Controller {
     /**
      * @param {Object} data
      * @param {String} data.itemId
+     * @param {Object} value
+     * @param {Object} oldValue
      */
-    onRouteLearnItem({itemId}) {
+    async onRouteLearnItem({itemId}, value, oldValue) {
         let stateProvider = this.getStateProvider(),
-            store         = stateProvider.getStore('contentTree');
+            store         = stateProvider.getStore('tree'),
+            tree          = this.getReference('tree');
+
+        // The route's `{*itemId}` compiles to `(.*)`, so a deep link to a section arrives with its
+        // fragment attached: `guides/x/Page#some-heading`. Record ids never contain one, so passing it
+        // through means an exact-lookup miss and a blank page — the id has to be separated from the
+        // in-page anchor here. Route params are the app's to interpret; widening the shared router's
+        // wildcard would change capture semantics for every routed app.
+        const recordId = itemId.split('#')[0];
+
+        // Ensure the tree has the correct route prefix for this controller context
+        if (tree.routePrefix !== '/learn') {
+            tree.routePrefix = '/learn'
+        }
+
+        const select = async () => {
+            stateProvider.data.currentPageRecord = store.get(recordId);
+
+            if (!oldValue?.hashString?.startsWith('/learn')) {
+                await tree.expandAndScrollToItem(recordId)
+            } else {
+                tree.expandParents(recordId)
+            }
+        };
 
         if (store.getCount() > 0) {
-            stateProvider.data.currentPageRecord = store.get(itemId)
+            await select()
         } else {
             store.on({
-                load : () => {stateProvider.data.currentPageRecord = store.get(itemId)},
+                load : select,
                 delay: 10,
                 once : true
             })

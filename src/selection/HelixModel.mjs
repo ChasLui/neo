@@ -42,22 +42,22 @@ class HelixModel extends Model {
     onContainerClick() {
         let me       = this,
             {view}   = me,
-            oldItems = [...me.items],
-            deltas   = [];
+            oldItems = [...me.items];
 
+        // Same correction as GalleryModel.onContainerClick, for the same reason: the previous
+        // Neo.applyDeltas list wrote the DOM and left the vdom still annotated, so the two trees
+        // disagreed about what was selected. deannotateItem removes both neo-selected and
+        // aria-selected, and the differ carries it.
         me.items.forEach(item => {
-            deltas.push({
-                id : view.getItemVnodeId(item),
-                cls: {
-                    add   : [],
-                    remove: ['neo-selected']
-                }
-            });
+            me.deannotateItem(view.getVdomChild(me.getItemVdomId(item)))
         });
 
         me.items.splice(0, me.items.length);
 
-        Neo.applyDeltas(view.appName, deltas).then(() => {
+        // Same ordering contract as GalleryModel.onContainerClick: settle the DOM, then fire. The
+        // event carried a DOM-is-current guarantee under the old applyDeltas().then(...) shape, and
+        // a synchronous fire after a void update() would silently withdraw it.
+        view.promiseUpdate().then(() => {
             me.fire('selectionChange', me.items, oldItems)
         })
     }
@@ -77,7 +77,7 @@ class HelixModel extends Model {
                 this.select(key);
 
                 view.fire('select', {
-                    record: view.store.get(key)
+                    record: view.store.get(key) || view.store.items.find(r => view.getRecordId(r) === key)
                 });
 
                 break
@@ -121,14 +121,15 @@ class HelixModel extends Model {
             {stayInColumn, view} = me,
             {store}              = view,
             selected             = me.items[0],
-            countRecords         = store.getCount(),
+            countRecords         = view.maxItems ? Math.min(view.maxItems, store.getCount()) : store.getCount(),
             itemsPerRow          = parseInt(360 / view.itemAngle),
             index, record;
 
         step *= itemsPerRow;
 
         if (selected) {
-            index = store.indexOf(selected) + step
+            record = store.get(selected) || store.items.find(r => view.getRecordId(r) === selected);
+            index  = store.indexOf(record) + step
         } else {
             index = 0
         }
@@ -151,7 +152,7 @@ class HelixModel extends Model {
 
         record = store.getAt(index);
 
-        me.select(record[store.keyProperty]);
+        me.select(view.getRecordId(record));
 
         view.fire('select', {
             record
@@ -166,11 +167,12 @@ class HelixModel extends Model {
             {view}       = me,
             {store}      = view,
             selected     = me.items[0],
-            countRecords = store.getCount(),
+            countRecords = view.maxItems ? Math.min(view.maxItems, store.getCount()) : store.getCount(),
             index, record;
 
         if (selected) {
-            index = store.indexOf(selected) + step
+            record = store.get(selected) || store.items.find(r => view.getRecordId(r) === selected);
+            index  = store.indexOf(record) + step
         } else {
             index = 0
         }
@@ -183,7 +185,7 @@ class HelixModel extends Model {
 
         record = store.getAt(index);
 
-        me.select(record[store.keyProperty]);
+        me.select(view.getRecordId(record));
 
         view.fire('select', {
             record
@@ -214,21 +216,45 @@ class HelixModel extends Model {
     }
 
     /**
+     * @summary Resolves a tracked record id to the prefixed vnode id the view's items actually carry.
+     *
+     * {@link Neo.selection.HelixModel#select select()} tracks the **logical** record id, while
+     * `Helix#createItem` keys each item node as `getItemVnodeId(recordId)` → `${view.id}__${recordId}`.
+     * The base implementation is identity, which resolves nothing against this view.
+     *
+     * @param {String} item Tracked record id
+     * @returns {String}
+     * @protected
+     */
+    getItemVdomId(item) {
+        return this.view?.getItemVnodeId(item) ?? item
+    }
+
+    /**
      * @param {String} itemId
      * @param {Boolean} [toggleSelection=true]
      */
     select(itemId, toggleSelection=true) {
         let me         = this,
             view       = me.view,
-            isSelected = toggleSelection === false ? false : me.items.includes(itemId),
             items      = me.items,
             oldItems   = [...items],
-            deltas     = [];
+            deltas     = [],
+            isSelected;
 
         // a select() call can happen before the view is registered
         if (!view) {
             return;
         }
+
+        if (view.useInternalId && view.store?.count > 0) {
+            let record = view.store.get(itemId);
+            if (record) {
+                itemId = view.getRecordId(record);
+            }
+        }
+
+        isSelected = toggleSelection === false ? false : items.includes(itemId);
 
         if (!view.mounted) {
             view.on('mounted', () => {
@@ -248,6 +274,8 @@ class HelixModel extends Model {
                             remove: ['neo-selected']
                         }
                     });
+
+                    me.deannotateItem(view.getVdomChild(view.getItemVnodeId(item)))
                 }
             });
 
@@ -262,18 +290,32 @@ class HelixModel extends Model {
             }
         });
 
+        // The delta reaches the DOM immediately; this puts the SAME annotation on the vdom, which is what
+        // `restoreSelection` reads after a rebuild. Without it the vdom never carries the selection, so
+        // `aria-selected` is absent until a restore INVENTS it — and a sort that introduces ARIA for the
+        // first time has not preserved anything. One annotation owner, both paths, both directions.
+        const node = view.getVdomChild(view.getItemVnodeId(itemId));
+
+        isSelected ? me.deannotateItem(node) : me.annotateItem(node);
+
         NeoArray[isSelected ? 'remove' : 'add'](items, itemId);
 
         // console.log('select', itemId, isSelected, items);
 
-        view.mounted && Neo.currentWorker.promiseMessage('main', {
-            action : 'updateDom',
-            appName: view.appName,
-            deltas
-        }).then(() => {
+        view.mounted && Neo.applyDeltas(view.windowId, deltas).then(() => {
             view.onSelect?.(items);
             me.fire('selectionChange', items, oldItems);
         });
+    }
+
+    /**
+     * @returns {Object}
+     */
+    toJSON() {
+        return {
+            ...super.toJSON(),
+            stayInColumn: this.stayInColumn
+        }
     }
 
     /**

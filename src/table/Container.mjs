@@ -84,6 +84,11 @@ class Container extends BaseContainer {
          */
         sortable_: true,
         /**
+         * @member {Boolean} useInternalId_=true
+         * @reactive
+         */
+        useInternalId_: true,
+        /**
          * @member {Neo.data.Store} store_=null
          * @reactive
          */
@@ -143,10 +148,11 @@ class Container extends BaseContainer {
             sortable         : me.sortable,
             ...me.headerToolbarConfig
         }, {
-            module     : TableBody,
-            containerId: me.id,
-            id         : me.bodyId,
-            store      : me.store,
+            module       : TableBody,
+            containerId  : me.id,
+            id           : me.bodyId,
+            store        : me.store,
+            useInternalId: me.useInternalId,
             ...me.bodyConfig
         }];
 
@@ -219,6 +225,18 @@ class Container extends BaseContainer {
     afterSetSortable(value, oldValue) {
         if (oldValue !== undefined) {
             this.headerToolbar.sortable = value
+        }
+    }
+
+    /**
+     * Triggered after the useInternalId config got changed
+     * @param {Boolean} value
+     * @param {Boolean} oldValue
+     * @protected
+     */
+    afterSetUseInternalId(value, oldValue) {
+        if (oldValue !== undefined && this.body) {
+            this.body.useInternalId = value
         }
     }
 
@@ -426,6 +444,14 @@ class Container extends BaseContainer {
     }
 
     /**
+     * @summary Sorts the store. The body re-renders off the store's own `load` event, not from here.
+     *
+     * `me.store.sort()` runs synchronously into {@link Neo.data.Store#onCollectionSort}, which re-fires the
+     * sort as a `load` — and `table.Body` binds that event itself (`Body#afterSetStore`). So the body has
+     * already re-rendered by the time this method returns. Calling `me.body.onStoreLoad()` here as well ran
+     * the full row rebuild a second time on every column-header sort. `grid.Container#onSortColumn` never
+     * made that call, which is what showed the event path is sufficient on its own.
+     *
      * @param {Object} opts
      * @param {String} opts.direction
      * @param {String} opts.property
@@ -435,8 +461,7 @@ class Container extends BaseContainer {
         let me = this;
 
         me.store.sort(opts);
-        me.removeSortingCss(opts.property);
-        opts.direction && me.body.onStoreLoad()
+        me.removeSortingCss(opts.property)
     }
 
     /**

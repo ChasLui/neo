@@ -129,7 +129,7 @@ class Layout extends Base {
 
         let me = this;
 
-        me.bind && me.container.getStateProvider()?.parseConfig(me)
+        me.bind && me.container.getStateProvider()?.createBindings(me)
     }
 
     /**
@@ -188,6 +188,22 @@ class Layout extends Base {
      */
     setSilent(values={}) {
         return this.set(values, true)
+    }
+
+    /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            appName     : me.appName,
+            containerCls: me.containerCls,
+            containerId : me.containerId,
+            windowId    : me.windowId
+        }
     }
 }
 

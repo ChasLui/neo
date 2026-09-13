@@ -1,13 +1,13 @@
-import Container              from '../../../../src/tab/Container.mjs';
 import ExampleStore           from '../../store/Examples.mjs';
 import List                   from './List.mjs';
+import TabContainer           from '../shared/TabContainer.mjs';
 import TabContainerController from './TabContainerController.mjs';
 
 /**
  * @class Portal.view.examples.TabContainer
- * @extends Neo.tab.Container
+ * @extends Portal.view.shared.TabContainer
  */
-class TabContainer extends Container {
+class ExamplesTabContainer extends TabContainer {
     static config = {
         /**
          * @member {String} className='Portal.view.examples.TabContainer'
@@ -20,19 +20,20 @@ class TabContainer extends Container {
          */
         activeIndex: null,
         /**
-         * @member {String[]} baseCls=['portal-examples-tab-container','neo-tab-container']
-         */
-        baseCls: ['portal-examples-tab-container', 'neo-tab-container'],
-        /**
          * @member {Neo.controller.Component} controller=TabContainerController
          * @reactive
          */
         controller: TabContainerController,
         /**
+         * @member {Boolean} sortable=true
+         * @reactive
+         */
+        dragResortable: true,
+        /**
          * @member {Object} headerToolbar
          */
         headerToolbar: {
-            cls: ['portal-examples-tab-header-toolbar']
+            cls: ['portal-shared-tab-header-toolbar', 'neo-tab-header-toolbar']
         },
         /**
          * @member {Object} itemDefaults
@@ -41,24 +42,17 @@ class TabContainer extends Container {
             module: List
         },
         /**
+         * Items are listed in the intended top-to-bottom display order for the left-docked tab bar.
          * @member {Object[]} items
          */
         items: [{
-            reference: 'examples-devmode-list',
-            store    : {module: ExampleStore, url: '../../apps/portal/resources/data/examples_devmode.json'},
-            header   : {
-                iconCls: 'fa fa-chess-knight',
-                route  : '/examples/devmode',
-                text   : 'Dev Mode'
-            }
-        }, {
-            environment: 'dist/development',
-            reference  : 'examples-dist-dev-list',
-            store      : {module: ExampleStore, url: '../../apps/portal/resources/data/examples_dist_dev.json'},
+            environment: 'dist/production',
+            reference  : 'examples-dist-prod-list',
+            store      : {module: ExampleStore, url: '../../apps/portal/resources/data/examples_dist_prod.json'},
             header     : {
-                iconCls: 'fa fa-chess-bishop',
-                route  : '/examples/dist_dev',
-                text   : 'dist/dev'
+                iconCls: 'fa fa-chess-king',
+                route  : '/examples/dist_prod',
+                text   : 'dist/prod'
             }
         }, {
             environment: 'dist/production',
@@ -70,26 +64,24 @@ class TabContainer extends Container {
                 text   : 'dist/esm'
             }
         }, {
-            environment: 'dist/production',
-            reference  : 'examples-dist-prod-list',
-            store      : {module: ExampleStore, url: '../../apps/portal/resources/data/examples_dist_prod.json'},
+            environment: 'dist/development',
+            reference  : 'examples-dist-dev-list',
+            store      : {module: ExampleStore, url: '../../apps/portal/resources/data/examples_dist_dev.json'},
             header     : {
-                iconCls: 'fa fa-chess-king',
-                route  : '/examples/dist_prod',
-                text   : 'dist/prod'
+                iconCls: 'fa fa-chess-bishop',
+                route  : '/examples/dist_dev',
+                text   : 'dist/dev'
             }
-        }],
-        /**
-         * @member {Boolean} sortable=true
-         * @reactive
-         */
-        sortable: true,
-        /**
-         * @member {String} tabBarPosition='left'
-         * @reactive
-         */
-        tabBarPosition: 'left',
+        }, {
+            reference: 'examples-devmode-list',
+            store    : {module: ExampleStore, url: '../../apps/portal/resources/data/examples_devmode.json'},
+            header   : {
+                iconCls: 'fa fa-chess-knight',
+                route  : '/examples/devmode',
+                text   : 'Dev Mode'
+            }
+        }]
     }
 }
 
-export default Neo.setupClass(TabContainer);
+export default Neo.setupClass(ExamplesTabContainer);

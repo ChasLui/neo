@@ -6,6 +6,7 @@ import Logger           from '../util/Logger.mjs';
 import NeoArray         from '../util/Array.mjs';
 import Rectangle        from '../util/Rectangle.mjs';
 import Style            from '../util/Style.mjs';
+import VDomUpdate       from '../manager/VDomUpdate.mjs';
 import VDomUtil         from '../util/VDom.mjs';
 import VNodeUtil        from '../util/VNode.mjs';
 import {isDescriptor}   from '../core/ConfigSymbols.mjs';
@@ -13,8 +14,33 @@ import {isDescriptor}   from '../core/ConfigSymbols.mjs';
 const
     addUnits          = value => value == null ? value : isNaN(value) ? value : `${value}px`,
     closestController = Symbol.for('closestController'),
-    {currentWorker}   = Neo,
     lengthRE          = /^\d+\w+$/;
+
+/**
+ * @typedef {Object} ComponentReferenceConfig
+ * @property {String} componentId The id of the child component instance represented by this placeholder.
+ * @property {String} [id] The root VNode id for the referenced component. Defaults to `componentId` when omitted.
+ * @property {Boolean} [removeDom=false] Removes the referenced component's DOM while preserving the VDom placeholder.
+ */
+
+/**
+ * @typedef {Object|ComponentReferenceConfig} VDomNodeConfig
+ * @property {String} [tag='div'] The HTML tag name used to create the node. `fragment` creates a transparent container.
+ * @property {String} [id] A stable VNode id. Component code usually lets the framework generate this value.
+ * @property {String|String[]} [cls] CSS classes to apply to the node.
+ * @property {Object|String} [style] Inline style declaration for the node.
+ * @property {String|Number} [html] Raw HTML content. Exclusive with `text` and `cn`.
+ * @property {String|Number|Boolean} [text] Text content. Exclusive with `html` and `cn`.
+ * @property {VDomNodeConfig[]} [cn] Child VDom node configs. Exclusive with `html` and `text`.
+ * @property {'vnode'|'text'|'root'} [vtype='vnode'] VNode type. Use `text` for pure text nodes.
+ * @property {Boolean} [static=false] Excludes this node and its children from delta updates.
+ * @property {Boolean} [removeDom=false] Removes the corresponding DOM node while keeping the logical VDom node.
+ * @property {Object.<String, String|Number|Boolean>} [data] Values rendered as `data-*` attributes.
+ * @property {String} [flag] Component-local lookup marker for direct access to this VDom node.
+ * @property {String|Number} [tabIndex] HTML tabindex attribute.
+ * @property {String} [role] ARIA role attribute.
+ * @property {Boolean} [disabled] HTML disabled attribute.
+ */
 
 /**
  * Base class for all Components which have a DOM representation
@@ -42,15 +68,17 @@ class Component extends Abstract {
          */
         ntype: 'component',
         /**
-         * The default alignment specification to position this Component relative to some other
-         * Component, or Element or Rectangle. Only applies in case floating = true.
+         * The default alignment specification to position this Component relative to another
+         * Component/Element id, or to a JSON-safe viewport Rectangle `{x,y,width,height}`. A zero-size
+         * Rectangle is a point target (for example a context-menu pointer coordinate). Live DOM objects
+         * never cross the worker boundary. Only applies in case floating = true.
          * @member {Object|String} align_={[isDescriptor]: true, merge: 'deep', value: {edgeAlign: 't-b',constrainTo: 'document.body'}}
          * @reactive
          */
         align_: {
             [isDescriptor]: true,
             merge         : 'deep',
-            value: {
+            value         : {
                 edgeAlign  : 't-b',
                 constrainTo: 'document.body'
             }
@@ -168,6 +196,18 @@ class Component extends Abstract {
          */
         minWidth_: null,
         /**
+         * Declares part of this component's DOM as a native HTML5 drag source, so a drag can carry
+         * a `DataTransfer` payload into content the synthetic drag pipeline cannot reach — an
+         * embedded iframe, another window's foreign document, the OS. The declaration is pure JSON:
+         * a `delegate` selector for the draggable nodes, a `types` map of mime type to attribute
+         * template (`'{data-record-id}'` reads that attribute off the source node at drag time),
+         * and an optional `effectAllowed`. Requires the `NativeDragSource` main-thread addon; see
+         * its class docs for the payload contract and the partition with the synthetic pipeline.
+         * @member {Object|null} nativeDragZone_=null
+         * @reactive
+         */
+        nativeDragZone_: null,
+        /**
          * Array of Plugin Modules and / or config objects
          * @member {Array|null} plugins_=null
          * @protected
@@ -206,6 +246,13 @@ class Component extends Abstract {
         scrollable_: false,
         /**
          * Style attributes added to this vdom root. see: getVdomRoot()
+         *
+         * **Important:** When `vdom === vdomRoot` (single node component), the `wrapperStyle` mechanism
+         * creates a persistent state loop to support runtime VDOM mutations.
+         * This means that to *remove* a style property you previously set, you MUST set it to `null`.
+         * Using `delete` or setting `undefined` will revert to the "previous state", which unfortunately
+         * includes the very value you are trying to remove if it has leaked into `wrapperStyle`.
+         *
          * @member {Object} style={[isDescriptor]: true, merge: 'shallow', value: null}
          */
         style_: {
@@ -254,12 +301,6 @@ class Component extends Abstract {
          */
         ui_: null,
         /**
-         * True after the component initVnode() method was called. Also fires the vnodeInitialized event.
-         * @member {Boolean} vnodeInitialized=false
-         * @protected
-         */
-        vnodeInitialized: false,
-        /**
          * Shortcut for style.width, defaults to px
          * @member {Number|String|null} width_=null
          * @reactive
@@ -272,6 +313,10 @@ class Component extends Abstract {
         wrapperCls_: null,
         /**
          * Top level style attributes. Useful in case getVdomRoot() does not point to the top level DOM node.
+         *
+         * **Note:** The getter for this config reads `vdom.style` as a default value to support runtime mutations.
+         * This creates the persistent state loop described in the `style_` config documentation.
+         *
          * @member {Object|null} wrapperStyle_={[isDescriptor]: true, merge: 'shallow', value: null}
          * @reactive
          */
@@ -282,9 +327,50 @@ class Component extends Abstract {
         },
         /**
          * The vdom markup for this component.
-         * @member {Object} _vdom={}
+         * @member {VDomNodeConfig} _vdom={}
          */
         _vdom: {}
+    }
+
+    /**
+     * Monotonic guard for {@link #registerNativeDragZone}'s mount-gated sends: a pending send
+     * whose generation no longer matches was superseded (reset, replaced, or moved) and drops.
+     * @member {Number} nativeDragZoneGeneration=0
+     * @protected
+     */
+    nativeDragZoneGeneration = 0
+
+    /**
+     * The windowId whose main thread currently holds this component's native drag registration —
+     * the realm {@link #retireNativeDragZone} must address, which after a window transfer is not
+     * the current `windowId`. `null` = not registered.
+     * @member {Number|null} nativeDragZoneWindowId=null
+     * @protected
+     */
+    nativeDragZoneWindowId = null
+
+    /**
+     * Whether an owner withholds this component's DOM while its own `hidden` is false. A container
+     * that layers a second presence axis over a child's availability — `Neo.toolbar.Base` withdrawing
+     * a focus-gated action, see `applyContextualActionState` — stamps `vdom.removeDom` and raises this
+     * flag together; {@link #show} then leaves the marker in place on every path that un-hides the
+     * child, including the second `show()` a batched `set()` runs after its silent pass. The owner
+     * drops the flag and restores the marker to what `hidden` says.
+     * @member {Boolean} domWithheld=false
+     */
+    domWithheld = false
+
+    /**
+     * @param {Object} config
+     */
+    construct(config) {
+        let me = this;
+
+        if (!Object.hasOwn(me, '_vdom') && me._vdom) {
+            me._vdom = Neo.clone(me._vdom, true)
+        }
+
+        super.construct(config)
     }
 
     /**
@@ -296,31 +382,13 @@ class Component extends Abstract {
 
     /**
      * The setter will handle vdom updates automatically
-     * @member {Object} vdom=this._vdom
+     * @member {VDomNodeConfig} vdom=this._vdom
      */
     get vdom() {
         return this._vdom
     }
     set vdom(value) {
         this.afterSetVdom(value, value)
-    }
-
-    /**
-     * True after the component vnodeInitialized() method was called. Also fires the vnodeInitialized event.
-     * @member {Boolean} vnodeInitialized=false
-     * @protected
-     */
-    get vnodeInitialized() {
-        return this._vnodeInitialized || false
-    }
-    set vnodeInitialized(value) {
-        let me = this;
-
-        me._vnodeInitialized = value;
-
-        if (value === true) {
-            me.fire('vnodeInitialized', me.id)
-        }
     }
 
     /**
@@ -333,8 +401,6 @@ class Component extends Abstract {
         NeoArray.add(cls, value);
         this.cls = cls
     }
-
-
 
     /**
      * Either a string like 'color: red; background-color: blue;'
@@ -490,7 +556,13 @@ class Component extends Abstract {
      */
     afterSetId(value, oldValue) {
         super.afterSetId(value, oldValue);
-        this.changeVdomRootKey('id', value)
+
+        let me = this;
+
+        if (me.configsApplied) {
+            me.ensureStableIds();
+            me.update()
+        }
     }
 
     /**
@@ -572,6 +644,63 @@ class Component extends Abstract {
     }
 
     /**
+     * Triggered after the nativeDragZone config got changed.
+     *
+     * A reset retires first — in the realm that actually holds the registration — and every set
+     * issues a fresh, generation-guarded registration. See {@link #registerNativeDragZone} for the
+     * mount gating and {@link #retireNativeDragZone} for why pending sends cannot fire stale.
+     * @param {Object|null} value
+     * @param {Object|null} oldValue
+     * @protected
+     */
+    afterSetNativeDragZone(value, oldValue) {
+        let me = this;
+
+        oldValue && me.retireNativeDragZone();
+        value    && me.registerNativeDragZone()
+    }
+
+    /**
+     * Issues this component's {@link #nativeDragZone} declaration to the main-thread addon,
+     * gated on the mount: the addon scopes matches to the LIVE DOM subtree, so registering
+     * earlier could match nothing — and the gate doubles as the boot-order guard against the
+     * addon's own remote registration. The send is generation-checked, so a declaration reset,
+     * replaced, or moved between the listener attaching and the mount firing is dropped instead
+     * of resurrecting stale state. Records the realm it registered with, for the retire side.
+     * @protected
+     */
+    registerNativeDragZone() {
+        let me   = this,
+            gen  = ++me.nativeDragZoneGeneration,
+            send = () => {
+                if (gen === me.nativeDragZoneGeneration && me.nativeDragZone) {
+                    me.nativeDragZoneWindowId = me.windowId;
+                    Neo.main?.addon?.NativeDragSource?.register({...me.nativeDragZone, ownerId: me.id, windowId: me.windowId})
+                }
+            };
+
+        me.mounted ? send() : me.on('mounted', send, me, {once: true})
+    }
+
+    /**
+     * Retires this component's native drag registration in the realm that HOLDS it — after a
+     * window transfer that is the old window, not the current one — and invalidates any pending
+     * mount-gated send by bumping the generation. Never-registered declarations (a pre-mount
+     * reset) skip the remote call entirely.
+     * @protected
+     */
+    retireNativeDragZone() {
+        let me = this;
+
+        me.nativeDragZoneGeneration++;
+
+        if (me.nativeDragZoneWindowId !== null) {
+            Neo.main?.addon?.NativeDragSource?.unregister({ownerId: me.id, windowId: me.nativeDragZoneWindowId});
+            me.nativeDragZoneWindowId = null
+        }
+    }
+
+    /**
      * Triggered after the mounted config got changed
      * @param {Boolean} value
      * @param {Boolean} oldValue
@@ -619,7 +748,7 @@ class Component extends Abstract {
     async afterSetResponsive(value, oldValue) {
         if (value && !this.getPlugin('responsive')) {
             let me      = this,
-                module  = await import(`../../src/plugin/Responsive.mjs`),
+                module  = await me.trap(import(`../../src/plugin/Responsive.mjs`)),
                 plugins = me.plugins || [];
 
             plugins.push({
@@ -705,23 +834,27 @@ class Component extends Abstract {
 
     /**
      * Triggered after the theme config got changed
+     * @summary Keeps a local theme carrier unless the logical parent is also the physical DOM parent.
      * @param {String|null} value
      * @param {String|null} oldValue
      * @protected
      */
     afterSetTheme(value, oldValue) {
         if (value || oldValue !== undefined) {
-            let me          = this,
-                {cls}       = me,
-                needsUpdate = false;
+            let me            = this,
+                {cls, parent} = me,
+                inheritsTheme = value === parent?.theme && me.parentId === parent?.id,
+                needsUpdate   = false;
 
             if (oldValue && cls.includes(oldValue)) {
                 NeoArray.remove(cls, oldValue);
                 needsUpdate = true
             }
 
-            // We do not need to add a DOM based CSS selector, in case the theme is already inherited
-            if (value !== me.parent?.theme) {
+            // `parentComponent` can preserve logical focus / controller ancestry while `parentId`
+            // roots a floating embodiment elsewhere. CSS inheritance crosses only the physical DOM
+            // edge, so omit the local carrier exclusively when both parent roles are the same component.
+            if (!inheritsTheme) {
                 value && NeoArray.add(cls, value);
                 needsUpdate = true
             }
@@ -749,16 +882,22 @@ class Component extends Abstract {
      * @protected
      */
     afterSetTooltip(value, oldValue) {
+        let me = this;
+
         oldValue?.destroy?.();
 
         if (value) {
             if (Neo.ns('Neo.tooltip.Base')) {
-                this.createTooltip(value)
+                me.createTooltip(value)
             } else {
                 import('../tooltip/Base.mjs').then(() => {
-                    this.createTooltip(value)
+                    me.createTooltip(value)
                 })
             }
+        } else if (oldValue) {
+            // Retiring a tooltip: an own instance is destroyed above; a shared-tooltip owner must
+            // also leave the singleton's delegate set, or hovering it would open an empty tooltip.
+            me.removeCls('neo-uses-shared-tooltip')
         }
     }
 
@@ -804,10 +943,22 @@ class Component extends Abstract {
     afterSetWindowId(value, oldValue) {
         super.afterSetWindowId(value, oldValue);
 
-        let controller = this.controller;
+        let me         = this,
+            controller = me.controller;
 
         if (controller) {
             controller.windowId = value
+        }
+
+        /*
+            A native drag source is registered with ONE window's main thread. Moving the component
+            (a dock tear-out, a window transfer) must retire the registration in the realm that
+            holds it and re-issue it in the new one — waiting for the new mount, exactly like the
+            first registration did.
+        */
+        if (oldValue && me.nativeDragZone) {
+            me.retireNativeDragZone();
+            me.registerNativeDragZone()
         }
     }
 
@@ -874,7 +1025,8 @@ class Component extends Abstract {
                 configuredMinWidth : me.configuredMinWidth,
                 configuredMinHeight: me.configuredMinHeight,
                 configuredMaxWidth : me.configuredMaxWidth,
-                configuredMaxHeight: me.configuredMaxHeight
+                configuredMaxHeight: me.configuredMaxHeight,
+                windowId           : me.windowId
             };
 
         if (align.target) {
@@ -910,12 +1062,20 @@ class Component extends Abstract {
     }
 
     /**
-     * Triggered when accessing the wrapperStyle config
+     * Triggered when accessing the wrapperStyle config.
+     *
+     * It merges the current `vdom.style` into the result to ensure that runtime style mutations
+     * (hacks) or initial VDOM styles are preserved and not overwritten by the config value.
+     *
+     * **Warning:** This creates the persistent state loop described in the `style_` config.
+     * Reading the output (`vdom.style`) as the default for the input (`wrapperStyle`) means
+     * merged styles become permanent unless explicitly cleared with `null`.
+     *
      * @param {Object} value
      * @protected
      */
     beforeGetWrapperStyle(value) {
-        return {...Object.assign(this.vdom.style || {}, value)}
+        return {...this.vdom.style, ...value}
     }
 
     /**
@@ -1129,7 +1289,11 @@ class Component extends Abstract {
             })
         } else {
             me._tooltip = value;
-            Neo.tooltip.Base.createSingleton(me.app);
+
+            // The shared instance delegates from the app's main view. The unit harness runs without
+            // one, so the singleton is skipped there and the config stays readable on the owner —
+            // the same deliberate no-op `updateVdom()` takes in unit-test mode.
+            !Neo.config.unitTestMode && Neo.tooltip.Base.createSingleton(me.app);
             me.addCls('neo-uses-shared-tooltip');
             me.update()
         }
@@ -1148,6 +1312,9 @@ class Component extends Abstract {
 
         me.revertFocus();
 
+        // the main thread holds the registration, so nothing else would retire it with the component
+        me.nativeDragZone && me.retireNativeDragZone();
+
         me.controller = null; // triggers destroy()
 
         me.reference && me.getController()?.removeReference(me); // remove own reference from parent controllers
@@ -1158,7 +1325,7 @@ class Component extends Abstract {
 
         if (updateParentVdom && parentId) {
             if (parentId === 'document.body') {
-                Neo.applyDeltas(me.appName, {action: 'removeNode', id: me.vdom.id})
+                Neo.applyDeltas(me.windowId, {action: 'removeNode', id: me.vdom.id})
             } else {
                 parentVdom = parent.vdom;
 
@@ -1166,6 +1333,19 @@ class Component extends Abstract {
                 parent[silent ? '_vdom' : 'vdom'] = parentVdom
             }
         }
+
+        // Destruction is a complete render-flight cancellation boundary:
+        // 1. Settle every promise parked on this component's flight (the initiator's public
+        //    promiseUpdate AND merged children) with the house destroy sentinel — and remove the
+        //    callback entry itself, or it leaks forever (executeCallbacks never fires for a dead
+        //    owner).
+        // 2. Release the in-flight registry entry: a lingering one makes every ancestor update
+        //    yield to it forever (nothing can ever settle it — the reply targets a dead
+        //    component), silently freezing the ancestor's delta stream.
+        // 3. Re-trigger ancestors already queued behind this component — exactly once.
+        VDomUpdate.rejectCallbacks(me.id, Neo.isDestroyed);
+        VDomUpdate.unregisterInFlightUpdate(me.id);
+        VDomUpdate.triggerPostUpdates(me.id);
 
         super.destroy();
 
@@ -1188,9 +1368,13 @@ class Component extends Abstract {
      * Calls focus() on the top level DOM node of this component or on a given node via id
      * @param {String} id=this.id
      * @param {Boolean} children=false
+     * @param {Boolean} preventScroll
+     * @param {String} [modality] 'pointer' | 'keyboard' — optional input modality carried across the
+     * worker→main focus seam so DomAccess can suppress the accidental ring on a pointer / programmatic
+     * focus while a keyboard focus keeps its intentional ring. Undefined preserves user-agent behavior.
      */
-    focus(id=this.id, children=false) {
-        Neo.main.DomAccess.focus({children, id, windowId: this.windowId})
+    focus(id=this.id, children=false, preventScroll, modality) {
+        Neo.main.DomAccess.focus({children, id, modality, preventScroll, windowId: this.windowId})
     }
 
     /**
@@ -1236,11 +1420,34 @@ class Component extends Abstract {
     /**
      * Convenience shortcut
      * @param {String[]|String} id=this.id
-     * @param {String} appName=this.appName
+     * @param {String} windowId=this.windowId
      * @returns {Promise<Neo.util.Rectangle|Neo.util.Rectangle[]>}
      */
-    async getDomRect(id=this.id, appName=this.appName) {
-        let result = await Neo.main.DomAccess.getBoundingClientRect({appName, id, windowId: this.windowId});
+    async getDomRect(id=this.id, windowId=this.windowId) {
+        let result = await this.trap(Neo.main.DomAccess.getBoundingClientRect({id, windowId}));
+
+        if (Array.isArray(result)) {
+            return result.map(rect => Rectangle.clone(rect))
+        }
+
+        return Rectangle.clone(result)
+    }
+
+    /**
+     * @summary Convenience shortcut for transform-immune layout-box metrics.
+     *
+     * Mirrors {@link #getDomRect}, but resolves the LAYOUT box via `Neo.main.DomAccess.getLayoutRect()`:
+     * ancestor transforms (FLIP presentation windows, animated overlays) never distort the result,
+     * so the returned sizes are safe to persist into layout state. Nodes without a generated box
+     * (`display: none`, detached subtrees) resolve to the zero shape — matching
+     * `getBoundingClientRect()` — never to phantom specified sizes. Coordinates are
+     * offset-parent-relative — use {@link #getDomRect} when viewport space is required.
+     * @param {String[]|String} id=this.id
+     * @param {String} windowId=this.windowId
+     * @returns {Promise<Neo.util.Rectangle|Neo.util.Rectangle[]>}
+     */
+    async getLayoutRect(id=this.id, windowId=this.windowId) {
+        let result = await this.trap(Neo.main.DomAccess.getLayoutRect({id, windowId}));
 
         if (Array.isArray(result)) {
             return result.map(rect => Rectangle.clone(rect))
@@ -1301,35 +1508,37 @@ class Component extends Abstract {
     }
 
     /**
-     * Walks up the vdom tree and returns the closest theme found
+     * @summary Returns the closest theme: this component's own, then the nearest ancestor's along
+     * the component chain, then the window's or app's default.
+     *
+     * The inherited theme travels as a config (`container.Base#afterSetTheme` propagates it), and a
+     * child inside a themed scope carries no theme class of its own by design, so the theme config
+     * is the first thing to read at every level; a class is read as well, for a component that
+     * carries a theme class without the config. The walk follows components, not vdom nodes: a
+     * parent's vdom holds its children as component references whose `cls` says nothing about the
+     * theme, so a vdom walk sees a nested scope as empty and answers the app default instead.
      * @returns {String}
      */
     getTheme() {
         let me         = this,
             themeMatch = 'neo-theme-',
-            mainView, parentNodes;
+            component  = me;
 
-        for (const item of me.cls || []) {
-            if (item.startsWith(themeMatch)) {
-                return item
+        while (component) {
+            if (component.theme) {
+                return component.theme
             }
-        }
 
-        mainView = me.app?.mainView;
-
-        if (mainView) {
-            parentNodes = VDomUtil.getParentNodes(mainView.vdom, me.id);
-
-            for (const node of parentNodes || []) {
-                for (const item of node.cls || []) {
-                    if (item.startsWith(themeMatch)) {
-                        return item
-                    }
+            for (const item of component.cls || []) {
+                if (item.startsWith(themeMatch)) {
+                    return item
                 }
             }
+
+            component = component.parent
         }
 
-        return Neo.config.themes?.[0]
+        return (Neo.windowConfigs?.[me.windowId] || Neo.config).themes?.[0]
     }
 
     /**
@@ -1402,7 +1611,7 @@ class Component extends Abstract {
                 value = parseFloat(value)
             } else if (lengthRE.test(value)) {
                 let {id, windowId} = this;
-                value = await Neo.main.DomAccess.measure({id, value, windowId})
+                value = await this.trap(Neo.main.DomAccess.measure({id, value, windowId}))
             } else if (!isNaN(value)) {
                 value = parseFloat(value)
             }
@@ -1425,6 +1634,8 @@ class Component extends Abstract {
         // Note that vdom is not a real config, but implemented via get() & set().
         this._vdom = Neo.clone({...vdom, ...this._vdom || {}}, true);
 
+        this.ensureStableIds();
+
         delete config._vdom;
         delete config.vdom;
 
@@ -1433,50 +1644,15 @@ class Component extends Abstract {
 
     /**
      * Can get called after the component got vnodeInitialized. See the autoMount config as well.
+     * We have decided to always force a new initVnode(true) call here.
+     * Rationale:
+     * 1. The overhead of tracking hasUnmountedVdomChanges on every vdom update is removed.
+     * 2. The edge case of mounting a pre-calculated but untouched vnode tree is < 1%.
+     * 3. The cost of re-generating the vnode tree is low enough to justify the robustness and simplicity.
+     * 4. This ensures that the DOM is always mounted with the most up-to-date vdom state.
      */
     async mount() {
-        let me = this,
-            child, childIds;
-
-        if (!me.vnode) {
-            throw new Error('Component vnode must be generated before mounting, use Component.initVnode()');
-        }
-
-        // In case the component was already mounted, got unmounted and received vdom changes afterwards,
-        // a new initVnode() call is mandatory since delta updates could not get applied.
-        // We need to clear the hasUnmountedVdomChanges state for all child components
-        if (me.hasUnmountedVdomChanges) {
-            // todo: the hasUnmountedVdomChanges flag changes should happen on initVnode
-            me.hasUnmountedVdomChanges = false;
-
-            childIds = ComponentManager.getChildIds(me.vnode);
-
-            childIds.forEach(id => {
-                child = Neo.getComponent(id);
-
-                if (child) {
-                    child._hasUnmountedVdomChanges = false; // silent update
-                }
-            });
-            // end todo
-
-            me.initVnode(true)
-        } else {
-            await currentWorker.promiseMessage('main', {
-                action     : 'mountDom',
-                appName    : me.appName,
-                id         : me.id,
-                html       : me.vnode.outerHTML,
-                parentId   : me.getMountedParentId(),
-                parentIndex: me.getMountedParentIndex()
-            });
-
-            delete me.vdom.removeDom;
-
-            await me.timeout(30);
-
-            me.mounted = true
-        }
+        return this.initVnode(true)
     }
 
     /**
@@ -1484,10 +1660,60 @@ class Component extends Abstract {
      */
     onConstructed() {
         super.onConstructed();
+        this.keys?.register(this)
+    }
+
+    /**
+     * Captures scroll events from the main thread and syncs the logical vdom state.
+     *
+     * **Performance / Hot Path Note:**
+     * Scroll events fire continuously. We explicitly check the most common scrolling targets
+     * (the component's root, its wrapper, or its items root) in O(1) time before falling back
+     * to `VDomUtil.getById`. A full `getById` recursive tree traversal is extremely expensive
+     * (O(N) where N is all DOM nodes) and will lock up the App Worker during fast scrolling
+     * on complex components like Grids.
+     *
+     * @param {Object} data
+     */
+    onScrollCapture(data) {
+        super.onScrollCapture(data);
 
         let me = this;
 
-        me.keys?.register(me);
+        if (me._vdom) {
+            let targetId = data.target.id,
+                vdomNode;
+
+            // Fast Path 1: Target is the root node itself
+            if (me._vdom.id === targetId) {
+                vdomNode = me._vdom;
+            }
+            // Fast Path 2: Target is the logical vdom root (e.g. GridBody scroll container)
+            else if (me.id === targetId) {
+                // me.getVdomRoot() returns the node assigned me.id by ensureStableIds
+                let vdomRoot = me.getVdomRoot();
+                if (vdomRoot && vdomRoot.id === targetId) {
+                    vdomNode = vdomRoot;
+                }
+            }
+            // Fast Path 3: Target is the designated items container
+            else if (me.getVdomItemsRoot) {
+                let itemsRoot = me.getVdomItemsRoot();
+                if (itemsRoot && itemsRoot.id === targetId) {
+                    vdomNode = itemsRoot;
+                }
+            }
+
+            // Fallback: Expensive full tree traversal
+            if (!vdomNode) {
+                vdomNode = VDomUtil.getById(me._vdom, targetId);
+            }
+
+            if (vdomNode) {
+                vdomNode.scrollTop  = data.scrollTop;
+                vdomNode.scrollLeft = data.scrollLeft
+            }
+        }
     }
 
     /**
@@ -1584,24 +1810,30 @@ class Component extends Abstract {
      * Show the component.
      * hideMode: 'removeDom'  uses vdom removeDom.
      * hideMode: 'visibility' uses css visibility.
+     * While {@link #domWithheld} is set, the `removeDom` marker stays: the owner holding the DOM back
+     * decides presence, and this call only records the consumer's `hidden: false`.
      */
     show() {
         let me = this;
 
         if (me.hideMode !== 'visibility') {
-            delete me.vdom.removeDom;
+            if (!me.domWithheld) {
+                delete me.vdom.removeDom
+            }
 
             if (me.silentVdomUpdate) {
                 me.needsVdomUpdate = true
             } else if (me.parentId !== 'document.body') {
-                me.parent.updateDepth = 2;
+                me.parent.updateDepth = -1;
                 me.parent.update()
             } else {
                 !me.mounted && me.initVnode(true)
             }
         } else {
             let style = me.style;
-            delete style.visibility;
+            // We need to set null, since the style might be inside wrapperStyle,
+            // which would get re-applied in case we just delete the property.
+            style.visibility = null;
             me.style = style
         }
 
@@ -1631,7 +1863,7 @@ class Component extends Abstract {
         me._hidden = true; // silent update
         me.mounted = false;
 
-        Neo.applyDeltas(me.appName, {action: 'removeNode', id: me.vdom.id})
+        Neo.applyDeltas(me.windowId, {action: 'removeNode', id: me.vdom.id})
     }
 
     /**
@@ -1641,6 +1873,36 @@ class Component extends Abstract {
      */
     up(config) {
         return ComponentManager.up(this.id, config)
+    }
+
+    /**
+     * Serializes the component into a JSON-compatible object.
+     * Extends the core.Base serialization with component-specific properties.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            align       : me.align,
+            cls         : me.cls,
+            controller  : me.controller?.toJSON(),
+            disabled    : me.disabled,
+            height      : me.height,
+            hidden      : me.hidden,
+            keys        : me.keys?.toJSON(),
+            reference   : me.reference,
+            role        : me.role,
+            style       : me.style,
+            theme       : me.theme,
+            ui          : me.ui,
+            vdom        : me.vdom,
+            vnode       : me.vnode,
+            width       : me.width,
+            wrapperCls  : me.wrapperCls,
+            wrapperStyle: me.wrapperStyle
+        }
     }
 
     /**
@@ -1668,15 +1930,15 @@ class Component extends Abstract {
      *     await this.initVnode(true);
      *     await this.waitForDomRect();
      * @param {Object}          opts
-     * @param {String}          opts.appName=this.appName
      * @param {Number}          opts.attempts=10 Reruns in case the rect height or width equals 0
      * @param {Number}          opts.delay=50    Time in ms before checking again
      * @param {String[]|String} opts.id=this.id
+     * @param {String}          opts.windowId=this.windowId
      * @returns {Promise<Neo.util.Rectangle|Neo.util.Rectangle[]>}
      */
-    async waitForDomRect({appName=this.appName, attempts=10, delay=50, id=this.id}) {
+    async waitForDomRect({attempts=10, delay=50, id=this.id, windowId=this.windowId} = {}) {
         let me     = this,
-            result = await me.getDomRect(id, appName),
+            result = await me.getDomRect(id),
             reRun  = false;
 
         if (Array.isArray(result)) {
@@ -1691,7 +1953,7 @@ class Component extends Abstract {
 
         if (reRun && attempts > 0) {
             await me.timeout(delay);
-            return await me.waitForDomRect({appName, attempts: attempts-1, delay, id})
+            return await me.waitForDomRect({attempts: attempts-1, delay, id, windowId})
         }
 
         return result

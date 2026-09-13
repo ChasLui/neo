@@ -7,7 +7,58 @@ import Observable                    from '../core/Observable.mjs';
 import {createHierarchicalDataProxy} from './createHierarchicalDataProxy.mjs';
 import {isDescriptor}                from '../core/ConfigSymbols.mjs';
 
-const twoWayBindingSymbol = Symbol.for('twoWayBinding');
+const
+    recordChangeBindings = new WeakMap(),
+    twoWayBindingSymbol  = Symbol.for('twoWayBinding');
+
+/**
+ * Returns the shared notifyChange wrapper state for a Record instance.
+ * @summary Lets multiple StateProviders observe one Record while restoring the original method after cleanup.
+ * @param {Object} record
+ * @returns {Object}
+ */
+function getRecordChangeBinding(record) {
+    let binding = recordChangeBindings.get(record);
+
+    if (!binding) {
+        const
+            originalNotifyChange = record.notifyChange,
+            prototype            = Object.getPrototypeOf(record),
+            handlers             = new Set();
+
+        binding = {
+            handlers,
+            originalNotifyChange,
+            wrapper(data, silent=false) {
+                const result = originalNotifyChange.call(this, {
+                    changedFields: [],
+                    ...data
+                }, silent);
+
+                handlers.forEach(handler => handler(result));
+
+                return result
+            },
+            restore() {
+                if (record.notifyChange === binding.wrapper) {
+                    if (prototype.notifyChange === originalNotifyChange) {
+                        delete record.notifyChange
+                    } else {
+                        record.notifyChange = originalNotifyChange
+                    }
+                }
+            }
+        };
+
+        recordChangeBindings.set(record, binding)
+    }
+
+    if (record.notifyChange !== binding.wrapper) {
+        record.notifyChange = binding.wrapper
+    }
+
+    return binding
+}
 
 /**
  * An optional component state provider for adding bindings to configs
@@ -40,13 +91,12 @@ class Provider extends Base {
          */
         component: null,
         /**
-         /**
          * The core data object managed by this StateProvider.
          * This object holds the reactive state that can be accessed and modified
          * by components and formulas within the provider's hierarchy.
          * Changes to properties within this data object will trigger reactivity.
          * When new data is assigned, it will be deeply merged with existing data.
-         * @member {Object|null} data_=null
+         * @member {Object|null} data_={}
          * @example
          *     data: {
          *         user: {
@@ -69,6 +119,8 @@ class Provider extends Base {
          * Each formula is a function that receives a `data` argument, which is a hierarchical proxy
          * allowing access to data from the current provider and all its parent providers.
          * Changes to dependencies (accessed via `data.propertyName`) will automatically re-run the formula.
+         * A formula that reads a key which does not exist yet re-runs once that key gets created on this
+         * provider or on one of its parents.
          * @member {Object|null} formulas_=null
          * @example
          *     data: {
@@ -111,7 +163,35 @@ class Provider extends Base {
          *     }
          * @reactive
          */
-        stores_: null
+        stores_: {
+            [isDescriptor]: true,
+            /**
+             * Compares provider store maps by key and instance identity.
+             * @summary Allows same-id replacement instances to commit while suppressing identical mappings.
+             * @param {Object|null} value
+             * @param {Object|null} oldValue
+             * @returns {Boolean}
+             */
+            isEqual(value, oldValue) {
+                if (value === oldValue) {
+                    return true
+                }
+
+                if (!value || !oldValue) {
+                    return false
+                }
+
+                const keys = Object.keys(value);
+
+                return keys.length === Object.keys(oldValue).length
+                    && keys.every(key => value[key] === oldValue[key])
+            },
+            value: null
+        },
+        /**
+         * @member {String|null} windowId=null
+         */
+        windowId: null
     }
 
     /**
@@ -125,10 +205,46 @@ class Provider extends Base {
      */
     #dataConfigs = {}
     /**
+     * Counts the data properties created on this provider: the plain mirror of `#dataKeyVersion`,
+     * so that a bump never registers a read.
+     * @member {Number} #dataKeyCount=0
+     * @private
+     */
+    #dataKeyCount = 0
+    /**
+     * Changes whenever a data property gets created on this provider. An effect that looked a path
+     * up here while it was absent depends on it and re-runs once the key exists (see `#findDataOwner`).
+     * @member {Neo.core.Config} #dataKeyVersion=new Config(0)
+     * @private
+     */
+    #dataKeyVersion = new Config(0)
+    /**
      * @member {Map} #formulaEffects=new Map()
      * @private
      */
     #formulaEffects = new Map()
+    /**
+     * Tracks store instances THIS provider created from `stores` descriptors (class / config
+     * shapes). Passed-in instances are never added: the provider shares those, it does not own
+     * them. Owned instances get destroyed with the provider.
+     * @member {Set} #ownedStores=new Set()
+     * @private
+     */
+    #ownedStores = new Set()
+    /**
+     * Bumped on every reactive `stores` replacement and suffixed into generated provider-store ids.
+     * A fresh generation keeps implicit ids unique; explicit caller-provided ids remain unchanged
+     * and replacement identity is detected by the `stores` config's reference comparator.
+     * @member {Number} #storesGeneration=0
+     * @private
+     */
+    #storesGeneration = 0
+    /**
+     * Tracks provider-owned Record field bindings by StateProvider data path.
+     * @member {Map} #recordDataBindings=new Map()
+     * @private
+     */
+    #recordDataBindings = new Map()
 
     /**
      * @param {Object} config
@@ -136,6 +252,19 @@ class Provider extends Base {
     construct(config) {
         Neo.isUsingStateProviders = true;
         super.construct(config)
+    }
+
+    /**
+     * @param {*} value
+     * @returns {*}
+     * @protected
+     */
+    adjustValue(value) {
+        if (value instanceof Date) {
+            return new Date(value.valueOf())
+        }
+
+        return value
     }
 
     /**
@@ -195,26 +324,133 @@ class Provider extends Base {
 
     /**
      * Triggered before the stores config gets changed.
+     * @summary Normalizes provider-local store configs before instantiation, including predictable same-provider
+     * ids and sibling-key `sourceId` references.
      * @param {Object|null} value
      * @param {Object|null} oldValue
      * @returns {Object|null}
      * @protected
      */
     beforeSetStores(value, oldValue) {
+        const me = this;
+
+        // reactive replacement (or null-removal): an owned instance the provider no longer hosts
+        // gets destroyed NOW — deferring it to provider destroy would leak a live, registered
+        // store nothing can resolve anymore. Passed-in instances stay externally owned.
+        // ORDER MATTERS: this runs BEFORE the new value instantiates, freeing explicit ids for safe
+        // reuse while the generation bump gives implicit same-key replacements a fresh predictable id.
+        if (oldValue) {
+            const reusedInstances = new Set(
+                Object.values(value || {}).filter(storeValue => Neo.typeOf(storeValue) === 'NeoInstance')
+            );
+
+            me.#storesGeneration++;
+
+            Object.values(oldValue).forEach(store => {
+                if (me.#ownedStores.has(store) && !reusedInstances.has(store)) {
+                    me.#ownedStores.delete(store);
+                    store.destroy()
+                }
+            })
+        }
+
         if (value) {
-            let me = this;
+            const storeIds = {};
 
             Object.entries(value).forEach(([key, storeValue]) => {
+                const storeId = me.getProviderStoreId(key, storeValue);
+
+                if (storeId) {
+                    storeIds[key] = storeId
+                }
+            });
+
+            Object.entries(value).forEach(([key, storeValue]) => {
+                const providerCreates = Neo.typeOf(storeValue) !== 'NeoInstance';
+
+                storeValue = me.normalizeProviderStoreConfig(key, storeValue, storeIds);
+
                 // support mapping string based listeners into the stateProvider instance
                 Object.entries(storeValue.listeners || {}).forEach(([listenerKey, listener]) => {
                     me.bindCallback(listener, listenerKey, me, storeValue.listeners)
                 })
 
-                value[key] = ClassSystemUtil.beforeSetInstance(storeValue)
+                value[key] = ClassSystemUtil.beforeSetInstance(storeValue);
+
+                providerCreates && me.#ownedStores.add(value[key])
             })
         }
 
         return value
+    }
+
+    /**
+     * Resolves the id a provider-local store config will use after instantiation.
+     * @summary Store config keys become predictable instance ids unless an explicit id or existing instance id
+     * already owns the store identity.
+     * @param {String} key
+     * @param {Class|Object|Neo.core.Base} storeValue
+     * @returns {String|null}
+     * @protected
+     */
+    getProviderStoreId(key, storeValue) {
+        const
+            type       = Neo.typeOf(storeValue),
+            generation = this.#storesGeneration,
+            baseId     = generation > 0 ? `${this.id}__${key}__${generation}` : `${this.id}__${key}`;
+
+        if (type === 'NeoInstance') {
+            return storeValue.id
+        }
+
+        if (type === 'Object') {
+            return storeValue.id || baseId
+        }
+
+        if (type === 'NeoClass') {
+            return baseId
+        }
+
+        return null
+    }
+
+    /**
+     * Normalizes a provider-local store declaration before the ClassSystem creates the instance.
+     * @summary Converts class shorthand to config objects, assigns missing predictable ids, and resolves
+     * sibling store-key `sourceId` values to their concrete instance ids.
+     * @param {String} key
+     * @param {Class|Object|Neo.core.Base} storeValue
+     * @param {Object} storeIds
+     * @returns {Class|Object|Neo.core.Base}
+     * @protected
+     */
+    normalizeProviderStoreConfig(key, storeValue, storeIds) {
+        let type = Neo.typeOf(storeValue);
+
+        if (type === 'NeoInstance') {
+            return storeValue
+        }
+
+        if (type === 'NeoClass') {
+            storeValue = {module: storeValue};
+            type       = 'Object'
+        }
+
+        if (type === 'Object') {
+            const config = {...storeValue};
+
+            if (!config.id) {
+                config.id = storeIds[key]
+            }
+
+            if (Neo.isString(config.sourceId) && storeIds[config.sourceId]) {
+                config.sourceId = storeIds[config.sourceId]
+            }
+
+            return config
+        }
+
+        return storeValue
     }
 
     /**
@@ -226,28 +462,44 @@ class Provider extends Base {
      */
     createBinding(componentId, configKey, formatter) {
         const
-            me     = this,
-            effect = new Effect(() => {
-                const component = Neo.get(componentId);
+            me        = this,
+            mapKey    = `${componentId}-${configKey}`,
+            oldEffect = me.#bindingEffects.get(mapKey);
 
-                if (component && !component.isDestroyed) {
-                    const
-                        hierarchicalData = me.getHierarchyData(),
-                        newValue         = Neo.isFunction(formatter) ? formatter.call(me, hierarchicalData) : hierarchicalData[formatter];
+        if (oldEffect) {
+            oldEffect.destroy()
+        }
 
+        const effect = new Effect(() => {
+            const component = Neo.get(componentId);
+
+            if (component && !component.isDestroyed) {
+                const
+                    hierarchicalData = me.getHierarchyData(),
+                    newValue         = Neo.isFunction(formatter) ? formatter.call(me, hierarchicalData) : hierarchicalData[formatter];
+
+                // The formatter's reads are this effect's dependencies; the writes below are not.
+                // A config's afterSet hooks read other configs of the component on the way to the
+                // DOM, and tracking those would re-run the formatter on every unrelated write.
+                EffectManager.pauseTracking();
+
+                try {
                     component._skipTwoWayPush = configKey;
                     component[configKey] = newValue;
                     delete component._skipTwoWayPush
+                } finally {
+                    EffectManager.resumeTracking()
                 }
-            });
+            }
+        });
 
-        me.#bindingEffects.set(componentId, effect);
+        me.#bindingEffects.set(mapKey, effect);
 
         // The effect observes the component's destruction to clean itself up.
         me.observeConfig(componentId, 'isDestroying', (value) => {
             if (value) {
                 effect.destroy();
-                me.#bindingEffects.delete(componentId)
+                me.#bindingEffects.delete(mapKey)
             }
         });
 
@@ -292,16 +544,23 @@ class Provider extends Base {
     }
 
     /**
-     * Destroys the state provider and cleans up all associated effects.
+     * Destroys the state provider and cleans up all associated effects, plus every store instance
+     * the provider itself created from a `stores` descriptor (passed-in instances stay alive —
+     * shared, not owned).
      */
     destroy() {
         const me = this;
+
+        me.#clearRecordDataBindings();
 
         me.#formulaEffects.forEach(effect => effect.destroy());
         me.#formulaEffects.clear();
 
         me.#bindingEffects.forEach(effect => effect.destroy());
         me.#bindingEffects.clear();
+
+        me.#ownedStores.forEach(store => store.destroy());
+        me.#ownedStores.clear();
 
         super.destroy()
     }
@@ -351,19 +610,48 @@ class Provider extends Base {
      * @returns {{owner: Neo.state.Provider, propertyName: String}|null}
      */
     getOwnerOfDataProperty(path) {
-        let me = this;
+        return this.#findDataOwner(path, true)
+    }
+
+    /**
+     * Walks the parent chain for the provider owning a data path.
+     * A miss at a level reads that provider's `#dataKeyVersion`: an active effect which read a path
+     * that does not exist yet depends on the key set of every provider it looked in, so it re-runs
+     * when the key gets created on any of them (see `#createDataConfig`).
+     * @param {String}  path
+     * @param {Boolean} track `false` on the write path: a write's owner lookup is not a read
+     * @returns {{owner: Neo.state.Provider, propertyName: String}|null}
+     * @private
+     */
+    #findDataOwner(path, track) {
+        const me = this;
 
         if (me.#dataConfigs[path]) {
             return {owner: me, propertyName: path}
         }
 
-        // Check for parent ownership
-        const parent = me.getParent();
-        if (parent) {
-            return parent.getOwnerOfDataProperty(path)
-        }
+        track && me.#dataKeyVersion.get();
 
-        return null
+        const parent = me.getParent();
+
+        return parent ? parent.#findDataOwner(path, track) : null
+    }
+
+    /**
+     * The single creation point for a data property's Config. Bumping `#dataKeyVersion` re-runs
+     * exactly the effects that read this provider's key set while the path was absent.
+     * @param {String} path
+     * @param {*}      value
+     * @returns {Neo.core.Config}
+     * @private
+     */
+    #createDataConfig(path, value) {
+        const config = new Config(value);
+
+        this.#dataConfigs[path] = config;
+        this.#dataKeyVersion.set(++this.#dataKeyCount);
+
+        return config
     }
 
     /**
@@ -439,6 +727,9 @@ class Provider extends Base {
             keys       = new Set(),
             pathPrefix = path ? `${path}.` : '';
 
+        // An enumeration depends on this provider's key set
+        this.#dataKeyVersion.get();
+
         for (const fullPath in this.#dataConfigs) {
             if (fullPath.startsWith(pathPrefix)) {
                 const
@@ -455,7 +746,7 @@ class Provider extends Base {
     }
 
     /**
-     * This is the core method for setting data, providing a single entry point for all data modifications.
+     * @summary Applies local or hierarchical data updates and notifies reactive parent paths.
      * It handles multiple scenarios:
      * 1.  **Object-based updates:** If `key` is an object, it recursively calls itself for each key-value pair.
      * 2.  **Data Records:** If `value` is a `Neo.data.Record`, it is treated as an atomic value and set directly.
@@ -468,7 +759,7 @@ class Provider extends Base {
      *
      * @param {Object|String} key The property to set, or an object of key-value pairs.
      * @param {*} value The new value.
-     * @param {Neo.state.Provider} [originStateProvider] The provider to start the search from for hierarchical updates.
+     * @param {Neo.state.Provider} [originStateProvider] Enables hierarchical owner lookup; absent updates stay local.
      * @protected
      */
     internalSetData(key, value, originStateProvider) {
@@ -493,7 +784,7 @@ class Provider extends Base {
         }
 
         const
-            ownerDetails   = me.getOwnerOfDataProperty(key),
+            ownerDetails   = originStateProvider && me.#findDataOwner(key, false),
             targetProvider = ownerDetails ? ownerDetails.owner : (originStateProvider || me);
 
         me.#setConfigValue(targetProvider, key, value, null);
@@ -574,12 +865,16 @@ class Provider extends Base {
         Object.entries(obj).forEach(([key, value]) => {
             const fullPath = path ? `${path}.${key}` : key;
 
+            value = me.adjustValue(value);
+
             // Ensure a Config instance exists for the current fullPath
             if (me.#dataConfigs[fullPath]) {
                 me.#dataConfigs[fullPath].set(value)
             } else {
-                me.#dataConfigs[fullPath] = new Config(value)
+                me.#createDataConfig(fullPath, value)
             }
+
+            me.#syncRecordDataValue(fullPath, value);
 
             // If the value is a plain object, recursively process its properties
             if (Neo.typeOf(value) === 'Object') {
@@ -612,6 +907,8 @@ class Provider extends Base {
      * @private
      */
     #setConfigValue(provider, path, newValue, oldVal) {
+        newValue = provider.adjustValue(newValue);
+
         let currentConfig = provider.getDataConfig(path),
             hasChange     = true,
             oldValue      = oldVal;
@@ -620,16 +917,172 @@ class Provider extends Base {
             oldValue  = currentConfig.get();
             hasChange = currentConfig.set(newValue)
         } else {
-            currentConfig = new Config(newValue);
-            provider.#dataConfigs[path] = currentConfig;
-            // Trigger all binding effects to re-evaluate their dependencies
-            provider.#bindingEffects.forEach(effect => effect.run())
+            currentConfig = provider.#createDataConfig(path, newValue)
         }
 
         if (hasChange) {
+            provider.#syncRecordDataValue(path, newValue);
+
             // Notify subscribers of the data property change.
             provider.onDataPropertyChange(path, newValue, oldValue)
         }
+    }
+
+    /**
+     * Releases all record-field subscriptions owned by this provider.
+     * @summary Prevents destroyed providers from retaining callbacks on external record instances.
+     * @private
+     */
+    #clearRecordDataBindings() {
+        Array.from(this.#recordDataBindings.keys()).forEach(path => this.#unbindRecordData(path))
+    }
+
+    /**
+     * Handles a field-change payload emitted by a bound Record.
+     * @summary Translates record-level changed fields into StateProvider data-path config updates.
+     * @param {String} path
+     * @param {Object} payload
+     * @private
+     */
+    #onRecordDataChange(path, payload) {
+        const {changedFields=[], silent} = payload;
+
+        if (silent || this.isDestroying || !changedFields.length) {
+            return
+        }
+
+        EffectManager.pause();
+        try {
+            changedFields.forEach(({name, oldValue, value}) => {
+                const fieldPath = `${path}.${name}`;
+
+                this.#setConfigValue(this, fieldPath, value, oldValue);
+                this.#syncRecordParentPath(path, fieldPath, value)
+            })
+        } finally {
+            EffectManager.resume()
+        }
+    }
+
+    /**
+     * Registers this provider for field changes on a Record stored in data.
+     * @summary Uses a removable wrapper around Record#notifyChange instead of an append-only sequence.
+     * @param {String} path
+     * @param {Object} record
+     * @private
+     */
+    #bindRecordData(path, record) {
+        const current = this.#recordDataBindings.get(path);
+
+        if (current?.record === record) {
+            this.#syncRecordDataFields(path, record);
+            return
+        }
+
+        this.#unbindRecordData(path);
+
+        const
+            binding = getRecordChangeBinding(record),
+            handler = payload => this.#onRecordDataChange(path, payload);
+
+        binding.handlers.add(handler);
+
+        this.#recordDataBindings.set(path, {binding, handler, record});
+        this.#syncRecordDataFields(path, record)
+    }
+
+    /**
+     * Mirrors a Record's current field values into StateProvider data-path configs.
+     * @summary Enables bindings like `currentUser.firstName` while keeping `currentUser` as the record value.
+     * @param {String} path
+     * @param {Object} record
+     * @private
+     */
+    #syncRecordDataFields(path, record) {
+        const data = record.toJSON?.();
+
+        if (Neo.typeOf(data) !== 'Object') {
+            return
+        }
+
+        Object.entries(data).forEach(([key, value]) => {
+            const fieldPath = `${path}.${key}`;
+
+            this.#setConfigValue(this, fieldPath, value);
+
+            if (Neo.typeOf(value) === 'Object') {
+                this.processDataObject(value, fieldPath)
+            }
+        })
+    }
+
+    /**
+     * Bubbles a nested record-field change up to record child-object configs.
+     * @summary Updates `recordPath.address` for a `recordPath.address.city` change without replacing the record.
+     * @param {String} recordPath
+     * @param {String} fieldPath
+     * @param {*} value
+     * @private
+     */
+    #syncRecordParentPath(recordPath, fieldPath, value) {
+        let
+            latestValue = value,
+            path        = fieldPath;
+
+        while (path.includes('.')) {
+            const leafKey = path.split('.').pop();
+            path = path.substring(0, path.lastIndexOf('.'));
+
+            if (path === recordPath) {
+                break
+            }
+
+            const
+                oldParentValue = this.getDataConfig(path)?.get(),
+                newParentValue = Neo.typeOf(oldParentValue) === 'Object'
+                    ? {...oldParentValue, [leafKey]: latestValue}
+                    : {[leafKey]: latestValue};
+
+            this.#setConfigValue(this, path, newParentValue, oldParentValue);
+            latestValue = newParentValue
+        }
+    }
+
+    /**
+     * Registers or clears Record field integration for a StateProvider data value.
+     * @summary Record values stay atomic at their own path while their fields get child configs.
+     * @param {String} path
+     * @param {*} value
+     * @private
+     */
+    #syncRecordDataValue(path, value) {
+        if (value?.isRecord) {
+            this.#bindRecordData(path, value)
+        } else {
+            this.#unbindRecordData(path)
+        }
+    }
+
+    /**
+     * Removes a previously registered Record field subscription.
+     * @summary Detaches stale record/path callbacks on replacement and provider destroy.
+     * @param {String} path
+     * @private
+     */
+    #unbindRecordData(path) {
+        const current = this.#recordDataBindings.get(path);
+
+        if (!current) {
+            return
+        }
+
+        current.binding.handlers.delete(current.handler);
+
+        if (!current.binding.handlers.size) {
+            current.binding.restore()
+        }
+
+        this.#recordDataBindings.delete(path)
     }
 
     /**
@@ -667,6 +1120,31 @@ class Provider extends Base {
             this.internalSetData(key, value)
         } finally {
             EffectManager.resume()
+        }
+    }
+
+    /**
+     * Serializes the instance into a JSON-compatible object for the Neural Link.
+     * @returns {Object}
+     */
+    toJSON() {
+        const
+            me     = this,
+            stores = {};
+
+        if (me.stores) {
+            Object.entries(me.stores).forEach(([key, value]) => {
+                stores[key] = value.toJSON()
+            })
+        }
+
+        return {
+            ...super.toJSON(),
+            component: me.component?.id,
+            data     : me.data,
+            parent   : me.parent?.id,
+            stores,
+            windowId : me.windowId
         }
     }
 }

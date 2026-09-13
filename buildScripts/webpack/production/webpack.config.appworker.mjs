@@ -1,8 +1,10 @@
-import fs           from 'fs-extra';
-import path         from 'path';
-import {spawnSync}  from 'child_process';
-import {minifyHtml} from '../../util/minifyHtml.mjs';
-import webpack      from 'webpack';
+import fs                  from 'fs-extra';
+import path                from 'path';
+import {spawnSync}         from 'child_process';
+import {copyDistAppAssets} from '../../util/distAppAssets.mjs';
+import {minifyHtml}        from '../../util/minifyHtml.mjs';
+import * as Terser         from 'terser';
+import webpack             from 'webpack';
 
 const
     cwd            = process.cwd(),
@@ -12,11 +14,9 @@ const
     neoPath        = packageJson.name.includes('neo.mjs') ? './' : './node_modules/neo.mjs/',
     buildTarget    = requireJson(path.resolve(neoPath, 'buildScripts/webpack/production/buildTarget.json')),
     filenameConfig = requireJson(path.resolve(neoPath, 'buildScripts/webpack/json/build.json')),
-    plugins        = [],
-    regexTopLevel  = /\.\.\//g;
+    plugins        = [];
 
-let contextAdjusted = false,
-    examplesPath;
+let examplesPath;
 
 if (!buildTarget.folder) {
     buildTarget.folder = 'dist/production';
@@ -32,9 +32,14 @@ export default async function(env) {
     inputPath  = path.resolve(cwd, 'src/MicroLoader.mjs');
     outputPath = path.resolve(cwd, buildTarget.folder, 'src/MicroLoader.mjs');
 
-    content = fs.readFileSync(inputPath).toString().replace(/\s/gm, '');
+    content = await Terser.minify(fs.readFileSync(inputPath, 'utf-8'), {module: true});
+
+    if (content.error) {
+        throw content.error
+    }
+
     fs.mkdirpSync(path.resolve(cwd, buildTarget.folder, 'src/'));
-    fs.writeFileSync(outputPath, content);
+    fs.writeFileSync(outputPath, content.code);
 
     const copyResources = resourcesPath => {
         let inputPath  = path.resolve(cwd, resourcesPath),
@@ -42,7 +47,7 @@ export default async function(env) {
             childProcess, content, filePath;
 
         if (fs.existsSync(inputPath)) {
-            childProcess = spawnSync('node', [`${neoPath}/buildScripts/copyFolder.mjs -s ${inputPath} -t ${outputPath}`], cpOpts);
+            childProcess = spawnSync('node', [`${neoPath}/buildScripts/util/copyFolder.mjs -s ${inputPath} -t ${outputPath}`], cpOpts);
             childProcess.status && process.exit(childProcess.status);
 
             // Minify all json files inside the copied resources folder
@@ -71,7 +76,12 @@ export default async function(env) {
             }
         }
 
-        lAppName = folder === 'examples' ? key : key.toLowerCase();
+        // `key` carries the real on-disk casing — `parseFolder` reads it from the filesystem — and
+        // the reads below use `lAppName` too, not just the writes. Folding an app folder to lower
+        // case therefore makes the build read a path that does not exist on a case-sensitive
+        // filesystem, and splits the output from `copyResources`, which uses the true casing. Only
+        // the synthetic `Docs` key needs the fold, since its source folder is `docs/`.
+        lAppName = folder === '' ? key.toLowerCase() : key;
         fs.mkdirpSync(path.resolve(cwd, buildTarget.folder, folder, lAppName));
 
         // neo-config.json
@@ -81,7 +91,9 @@ export default async function(env) {
         content = requireJson(inputPath);
         delete content.environment;
 
-        content.appPath = content.appPath.replace(regexTopLevel, '');
+        // Strip parent-dir (`..`) path segments — complete by construction (no substring-replace
+        // can re-form a segment) and identical to the old `../`-strip for every real appPath.
+        content.appPath = content.appPath.split('/').filter(segment => segment !== '..').join('/');
 
         Object.assign(content, {
             basePath,
@@ -105,7 +117,14 @@ export default async function(env) {
         outputPath = path.resolve(cwd, buildTarget.folder, folder, lAppName, 'index.html');
         content    = await minifyHtml(fs.readFileSync(inputPath, 'utf-8'));
 
-        fs.writeFileSync(outputPath, content)
+        fs.writeFileSync(outputPath, content);
+
+        // Static siblings the generated page links relatively (e.g. a web app manifest). Nothing
+        // above copies them: this function enumerates only the files it generates.
+        copyDistAppAssets(
+            path.resolve(cwd, folder, lAppName),
+            path.resolve(cwd, buildTarget.folder, folder, lAppName)
+        )
     };
 
     const isFile = fileName => fs.lstatSync(fileName).isFile();
@@ -153,13 +172,18 @@ export default async function(env) {
         entry : {app: path.resolve(neoPath, './src/worker/App.mjs')},
         target: 'webworker',
 
+        experiments: {
+            outputModule: true
+        },
+
         plugins: [
             new webpack.ContextReplacementPlugin(/.*/, context => {
                 let con = context.context;
 
-                if (!insideNeo && !contextAdjusted && (con.includes('/src/worker') || con.includes('\\src\\worker'))) {
-                    context.request = path.join('../../', context.request);
-                    contextAdjusted = true;
+                if (!insideNeo && (con.includes('/src/worker') || con.includes('\\src\\worker'))) {
+                    if (!context.request.startsWith('../../') && !context.request.startsWith('..\\..\\') && !context.request.startsWith('../data/') && !context.request.startsWith('..\\data\\')) {
+                        context.request = path.join('../../', context.request);
+                    }
                 }
             }),
             ...plugins
@@ -168,14 +192,16 @@ export default async function(env) {
         output: {
             chunkFilename: 'chunks/app/[id].js',
             filename     : filenameConfig.workers.app.output,
-            path         : path.resolve(cwd, buildTarget.folder)
+            library      : {type: 'module'},
+            path         : path.resolve(cwd, buildTarget.folder),
+            publicPath   : 'auto'
         },
 
         module: {
             rules: [
                 {
                     test: /\.mjs$/,
-                    use: [{
+                    use : [{
                         loader: path.resolve(neoPath, 'buildScripts/webpack/loader/template-loader.mjs')
                     }]
                 }

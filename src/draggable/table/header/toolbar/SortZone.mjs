@@ -1,9 +1,9 @@
-import BaseSortZone from '../../../toolbar/SortZone.mjs';
+import BaseSortZone from '../../../container/SortZone.mjs';
 import NeoArray     from  '../../../../util/Array.mjs';
 
 /**
  * @class Neo.draggable.table.header.toolbar.SortZone
- * @extends Neo.draggable.toolbar.SortZone
+ * @extends Neo.draggable.container.SortZone
  */
 class SortZone extends BaseSortZone {
     static config = {
@@ -53,10 +53,11 @@ class SortZone extends BaseSortZone {
     }
 
     /**
+     * Completes a table header drag under the base drag-end latch.
      * @param {Object} data
      */
-    async onDragEnd(data) {
-        await super.onDragEnd(data);
+    async processDragEnd(data) {
+        await super.processDragEnd(data);
 
         let {owner} = this;
 

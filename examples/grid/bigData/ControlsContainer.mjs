@@ -43,9 +43,9 @@ class ControlsContainer extends Container {
             handler: 'up.onControlsToggleButtonClick',
             iconCls: 'fas fa-bars'
         }, {
-            module  : TabContainer,
-            cls     : ['neo-examples-bigdata-controls-container-content'],
-            sortable: true,
+            module        : TabContainer,
+            cls           : ['neo-examples-bigdata-controls-container-content'],
+            dragResortable: true,
 
             headerToolbar: {
                 sortZoneConfig: {
@@ -70,7 +70,7 @@ class ControlsContainer extends Container {
                     labelWidth: 120,
                     listeners : {change: 'up.onAmountRowsChange'},
                     store     : ['1000', '5000', '10000', '20000', '50000', '100000'],
-                    value     : '1000',
+                    value     : '20000',
                     width     : 200
                 }, {
                     labelText : 'Amount Columns',
@@ -94,24 +94,24 @@ class ControlsContainer extends Container {
                     value     : '3',
                     width     : 200
                 }, {
-                    module        : Radio,
-                    checked       : true,
-                    labelText     : 'Theme',
-                    labelWidth    : 70,
-                    listeners     : {change: 'up.onThemeRadioChange'},
-                    name          : 'theme',
-                    style         : {marginTop: '2em'},
-                    value         : 'neo-theme-dark',
-                    valueLabelText: 'Dark'
+                    module    : Radio,
+                    checked   : true,
+                    labelText : 'Theme',
+                    labelWidth: 70,
+                    listeners : {change: 'up.onThemeRadioChange'},
+                    name      : 'theme',
+                    style     : {marginTop: '2em'},
+                    value     : 'neo-theme-dark',
+                    valueLabel: 'Dark'
                 }, {
-                    module        : Radio,
-                    labelText     : '',
-                    labelWidth    : 70,
-                    listeners     : {change: 'up.onThemeRadioChange'},
-                    name          : 'theme',
-                    style         : {marginTop: '.3em'},
-                    value         : 'neo-theme-light',
-                    valueLabelText: 'Light'
+                    module    : Radio,
+                    labelText : '',
+                    labelWidth: 70,
+                    listeners : {change: 'up.onThemeRadioChange'},
+                    name      : 'theme',
+                    style     : {marginTop: '.3em'},
+                    value     : 'neo-theme-light',
+                    valueLabel: 'Light'
                 }, {
                     ntype: 'label',
                     style: {marginTop: '2em'},
@@ -163,23 +163,23 @@ class ControlsContainer extends Container {
                 }, {
                     style         : {marginTop: '1em'},
                     selectionModel: selection.CellModel,
-                    valueLabelText: 'Cell'
+                    valueLabel    : 'Cell'
                 }, {
                     selectionModel: selection.ColumnModel,
-                    valueLabelText: 'Column'
+                    valueLabel    : 'Column'
                 }, {
                     checked       : true,
                     selectionModel: selection.RowModel,
-                    valueLabelText: 'Row'
+                    valueLabel    : 'Row'
                 }, {
                     selectionModel: selection.CellColumnModel,
-                    valueLabelText: 'Cell & Column'
+                    valueLabel    : 'Cell & Column'
                 }, {
                     selectionModel: selection.CellRowModel,
-                    valueLabelText: 'Cell & Row'
+                    valueLabel    : 'Cell & Row'
                 }, {
                     selectionModel: selection.CellColumnRowModel,
-                    valueLabelText: 'Cell & Column & Row'
+                    valueLabel    : 'Cell & Column & Row'
                 }]
             }]
         }],
@@ -207,20 +207,26 @@ class ControlsContainer extends Container {
     /**
      * @param {Object} data
      */
-    onAmountColumnsChange(data) {
+    async onAmountColumnsChange(data) {
         if (data.oldValue) {
-            this.grid.isLoading = 'Is Loading';
-            this.grid.amountColumns = parseInt(data.value.id)
+            let me = this;
+
+            me.grid.isLoading = 'Is Loading';
+            await me.timeout(5);
+            me.grid.amountColumns = parseInt(data.value.id)
         }
     }
 
     /**
      * @param {Object} data
      */
-    onAmountRowsChange(data) {
+    async onAmountRowsChange(data) {
         if (data.oldValue) {
-            this.grid.isLoading = 'Is Loading';
-            this.grid.store.amountRows = parseInt(data.value.id)
+            let me = this;
+
+            me.grid.isLoading = 'Is Loading';
+            await me.timeout(5);
+            me.grid.store.amountRows = parseInt(data.value.id)
         }
     }
 
@@ -275,12 +281,13 @@ class ControlsContainer extends Container {
     /**
      * @param {Object} data
      */
-    onFilterFieldChange(data) {
+    async onFilterFieldChange(data) {
         let me = this;
 
         if (me.firstFiltering) {
             me.firstFiltering = false;
-            me.grid.isLoading = 'Is Loading'
+            me.grid.isLoading = 'Is Loading';
+            await me.timeout(5);
         }
 
         me.grid.store.getFilter(data.component.name).value = data.value;

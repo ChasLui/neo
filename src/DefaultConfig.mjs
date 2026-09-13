@@ -104,13 +104,13 @@ const DefaultConfig = {
      */
     isGitHubPages: false,
     /**
-     * Flag for running the Neo main thread inside an iframe (Siesta Browser Harness)
+     * Flag for running Neo.mjs inside the middleware Node.js process.
      * @default false
      * @memberOf! module:Neo
-     * @name config.isInsideSiesta
+     * @name config.isMiddleware
      * @type Boolean
      */
-    isInsideSiesta: false,
+    isMiddleware: false,
     /**
      * delay in ms for the worker.Manager:loadApplication() call
      * @default 20
@@ -137,6 +137,27 @@ const DefaultConfig = {
      */
     logDeltaUpdates: false,
     /**
+     * true will track VDom delta batches in a per-window cross-batch live-id ledger
+     * (the coherence registry) in the main thread, logging cross-batch coherence findings
+     * (insert-on-live-id, retired-id targets, rename collisions) for measurement.
+     * Observe-mode only: findings never reject a batch.
+     * @default false
+     * @memberOf! module:Neo
+     * @name config.useDeltaCoherenceRegistry
+     * @type Boolean
+     */
+    useDeltaCoherenceRegistry: false,
+    /**
+     * true will validate VDom delta batches in the main thread before applying them.
+     * Guard-grade findings reject the whole batch before the first DOM mutation; candidate
+     * structural findings are logged for measurement only.
+     * @default false
+     * @memberOf! module:Neo
+     * @name config.useDeltaGrammarGuards
+     * @type Boolean
+     */
+    useDeltaGrammarGuards: false,
+    /**
      * true will log console warnings, in case a component tries to update() while a parent update is running.
      * A parent update results in a short delay, so you might want to resolve these collisions.
      * @default false
@@ -157,6 +178,25 @@ const DefaultConfig = {
      * @type String[]
      */
     mainThreadAddons: ['DragDrop', 'Navigator', 'Stylesheet'],
+    /**
+     * The URL for the Neural Link WebSocket connection.
+     * @default 'ws://127.0.0.1:8081'
+     * @memberOf! module:Neo
+     * @name config.neuralLinkUrl
+     * @type String
+     */
+
+    /**
+     * This config is auto-detected inside `Neo.Main.mjs` based on the user's system preference
+     * using `window.matchMedia('(prefers-color-scheme: dark)')`. It defaults to `false` and
+     * is updated before the App Worker is initialized, allowing apps to default to the
+     * correct theme mode on startup.
+     * @default false
+     * @memberOf! module:Neo
+     * @name config.prefersDarkTheme
+     * @type Boolean
+     */
+    prefersDarkTheme: false,
     /**
      * Pass the URL of a JSON-file, which contains the services and methods from your backend,
      * which you want to expose to the client.
@@ -203,6 +243,18 @@ const DefaultConfig = {
      */
     allowVdomUpdatesInTests: false,
     /**
+     * Set this to true to establish a WebSocket connection to the Neural Link MCP Server.
+     * This enables bidirectional communication between the App Worker and external AI Agents.
+     *
+     * You can also use a string or array of strings to specify the target environment(s).
+     * Example: 'development' or ['development', 'dist/production']
+     * @default false
+     * @memberOf! module:Neo
+     * @name config.useAiClient
+     * @type Boolean|String|String[]
+     */
+    useAiClient: false,
+    /**
      * Experimental flag if an offscreen canvas worker should get created.
      * @default false
      * @memberOf! module:Neo
@@ -210,6 +262,15 @@ const DefaultConfig = {
      * @type Boolean
      */
     useCanvasWorker: false,
+    /**
+     * Set this to true in case your app has a canvas.mjs entry point.
+     * Only relevant if useCanvasWorker is set to true.
+     * @default false
+     * @memberOf! module:Neo
+     * @name config.useCanvasWorkerStartingPoint
+     * @type Boolean
+     */
+    useCanvasWorkerStartingPoint: false,
     /**
      * `true` will enable the advanced, secure, and performant direct DOM API rendering strategy (recommended).
      * In this mode, `Neo.vdom.Helper` will create and send structured VNode object graphs to the Main Thread.
@@ -299,12 +360,12 @@ const DefaultConfig = {
     useVdomWorker: true,
     /**
      * buildScripts/injectPackageVersion.mjs will update this value
-     * @default '10.9.0'
+     * @default '13.1.0'
      * @memberOf! module:Neo
      * @name config.version
      * @type String
      */
-    version: '10.9.0'
+    version: '13.1.0'
 };
 
 Object.assign(DefaultConfig, {

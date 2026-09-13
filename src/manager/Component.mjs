@@ -22,6 +22,14 @@ class Component extends Manager {
     }
 
     /**
+     * A reverse map to track direct children for each component.
+     * Keys are parent component IDs, values are Sets of child component IDs.
+     * This enables O(1) retrieval of direct children, optimizing VDOM syncing and destruction logic.
+     * @member {Map<String, Set<String>>} childMap=new Map()
+     */
+    childMap = new Map()
+
+    /**
      * @member {Map} wrapperNodes=new Map()
      */
     wrapperNodes = new Map()
@@ -48,13 +56,19 @@ class Component extends Manager {
         vnode = {...vnode}; // shallow copy
 
         let me         = this,
-            childNodes = vnode?.childNodes ? [...vnode.childNodes] : [],
-            childNodeId, component, componentId, parentRef, referenceNode;
+            childNodes = vnode?.childNodes ? [...vnode.childNodes] : [];
 
         vnode.childNodes = childNodes;
 
-        childNodes.forEach((childNode, index) => {
-            childNodeId = childNode.id;
+        for (let index = 0, len = childNodes.length; index < len; index++) {
+            const childNode = childNodes[index];
+
+            let
+                childNodeId = childNode.id,
+                component,
+                componentId,
+                parentRef,
+                referenceNode;
 
             if (!childNode.componentId && childNodeId !== ownerId) {
                 component = me.get(childNodeId);
@@ -76,16 +90,12 @@ class Component extends Manager {
 
                 if (component) {
                     componentId   = component.id;
-                    referenceNode = {componentId};
-
-                    if (componentId !== childNodeId) {
-                        referenceNode.id = childNodeId
-                    }
+                    referenceNode = {componentId, id: childNodeId}
                 }
             }
 
             childNodes[index] = component ? referenceNode : me.addVnodeComponentReferences(childNode, ownerId)
-        });
+        }
 
         return vnode
     }
@@ -138,7 +148,7 @@ class Component extends Manager {
             returnArray.push(component)
         }
 
-        childItems = me.find({parentId: component.id});
+        childItems = me.getDirectChildren(component.id);
         len        = childItems.length;
 
         for (; i < len; i++) {
@@ -202,7 +212,7 @@ class Component extends Manager {
      */
     getChildComponents(component) {
         let me             = this,
-            directChildren = me.find('parentId', component.id) || [],
+            directChildren = me.getDirectChildren(component.id),
             components     = [],
             childComponents;
 
@@ -250,6 +260,59 @@ class Component extends Manager {
     }
 
     /**
+     * Returns an array of direct child components for a given parentId.
+     * Uses the optimized `childMap` for O(1) lookup performance, avoiding the need to iterate
+     * over all components in the manager.
+     * @param {String} parentId
+     * @returns {Neo.component.Base[]}
+     */
+    getDirectChildren(parentId) {
+        if (!parentId) return [];
+
+        let me   = this,
+            ids  = me.childMap.get(parentId),
+            children;
+
+        if (!ids) return [];
+
+        children = [];
+
+        ids.forEach(id => {
+            let component = me.get(id);
+            if (component) {
+                children.push(component)
+            } else {
+                // Cleanup dead references if any (should typically be handled by unregister)
+                ids.delete(id)
+            }
+        });
+
+        return children
+    }
+
+    /**
+     * Returns the distance between a child and a parent component
+     * @param {String} childId
+     * @param {String} parentId
+     * @returns {Number} -1 if not found
+     */
+    getDistance(childId, parentId) {
+        let child    = this.get(childId),
+            distance = 0;
+
+        while (child?.parentId) {
+            distance++;
+
+            if (child.parentId === parentId) {
+                return distance
+            }
+            child = this.get(child.parentId)
+        }
+
+        return -1
+    }
+
+    /**
      * !! For debugging purposes only !!
      *
      * Get the first component based on the ntype or other properties
@@ -278,9 +341,9 @@ class Component extends Manager {
      * @example
      Neo.first('button', false) // => [Button, Button, Button]
      */
-    getFirst(componentDescription, returnFirstMatch = true) {
+    getFirst(componentDescription, returnFirstMatch=true) {
         let objects = [],
-            app     = Neo.apps[Object.keys(Neo.apps)[0]],
+            app     = Object.values(Neo.apps)[0],
             root    = app.mainView;
 
         /* create an array of objects from string */
@@ -360,11 +423,21 @@ class Component extends Manager {
         let me            = this,
             componentPath = [],
             i             = 0,
-            len           = path?.length || 0;
+            len           = path?.length || 0,
+            component, id;
 
         for (; i < len; i++) {
-            if (me.has(path[i]) || me.wrapperNodes.get(path[i])) {
-                componentPath.push(path[i])
+            id = path[i];
+
+            if (me.has(id) || me.wrapperNodes.get(id)) {
+                component = me.get(id);
+
+                while (component) {
+                    componentPath.push(component.id);
+                    component = component.parent
+                }
+
+                break
             }
         }
 
@@ -395,6 +468,25 @@ class Component extends Manager {
     }
 
     /**
+     * Checks if a component is a descendant of another component
+     * @param {String} childId
+     * @param {String} parentId
+     * @returns {Boolean}
+     */
+    hasParent(childId, parentId) {
+        let child = this.get(childId);
+
+        while (child?.parentId) {
+            if (child.parentId === parentId) {
+                return true
+            }
+            child = this.get(child.parentId)
+        }
+
+        return false
+    }
+
+    /**
      * Check if the component had a property of any value somewhere in the Prototype chain
      *
      * @param {Neo.component.Base} component
@@ -415,6 +507,60 @@ class Component extends Manager {
     }
 
     /**
+     * Updates the `childMap` when a component's `parentId` config changes.
+     * Maintains the integrity of the reverse parent-child index.
+     * @param {Neo.component.Base} component
+     * @param {String|null} oldParentId
+     */
+    onParentIdChange(component, oldParentId) {
+        let me          = this,
+            newParentId = component.parentId,
+            set;
+
+        // Remove from old parent's set
+        if (oldParentId) {
+            set = me.childMap.get(oldParentId);
+            if (set) {
+                set.delete(component.id);
+                if (set.size === 0) {
+                    me.childMap.delete(oldParentId)
+                }
+            }
+        }
+
+        // Add to new parent's set
+        if (newParentId) {
+            set = me.childMap.get(newParentId);
+            if (!set) {
+                set = new Set();
+                me.childMap.set(newParentId, set)
+            }
+            set.add(component.id)
+        }
+    }
+
+    /**
+     * Registers a component and adds it to the `childMap` if it has a parentId.
+     * @param {Object} item
+     */
+    register(item) {
+        super.register(item);
+
+        const {id, parentId} = item;
+
+        if (parentId) {
+            let me  = this,
+                set = me.childMap.get(parentId);
+
+            if (!set) {
+                set = new Set();
+                me.childMap.set(parentId, set)
+            }
+            set.add(id)
+        }
+    }
+
+    /**
      * @param {String} wrapperId
      * @param {Neo.component.Base} component
      */
@@ -423,14 +569,37 @@ class Component extends Manager {
     }
 
     /**
+     * Unregisters a component, cleaning up wrapper nodes and `childMap` references.
      * @param {Neo.component.Base|String} item
      */
     unregister(item) {
+        let me        = this,
+            component = item;
+
         if (item) {
             if (Neo.isString(item)) {
-                this.wrapperNodes.delete(item)
-            } else if (item.id !== item.vdom.id) {
-                this.wrapperNodes.delete(item.vdom.id)
+                me.wrapperNodes.delete(item);
+                component = me.get(item)
+            }
+
+            if (component) {
+                const {id, parentId, vdom} = component;
+
+                if (vdom && id !== vdom.id) {
+                    me.wrapperNodes.delete(vdom.id)
+                }
+
+                if (parentId) {
+                    let set = me.childMap.get(parentId);
+
+                    if (set) {
+                        set.delete(id);
+
+                        if (set.size === 0) {
+                            me.childMap.delete(parentId)
+                        }
+                    }
+                }
             }
         }
 

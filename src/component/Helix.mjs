@@ -26,7 +26,7 @@ class Helix extends Component {
         ntype: 'helix',
         /**
          * The background color of the helix container
-         * @member {String} backgroundColor_='#000000'
+         * @member {String} backgroundColor_='#000000' [not-ticket-ref: css-color]
          * @reactive
          */
         backgroundColor_: '#000000',
@@ -258,6 +258,10 @@ class Helix extends Component {
          */
         url_: '../../resources/examples/data/ai_contacts.json',
         /**
+         * @member {Boolean} useInternalId=true
+         */
+        useInternalId: true,
+        /**
          * @member {Object} _vdom
          */
         _vdom:
@@ -284,9 +288,14 @@ class Helix extends Component {
         me.addDomListeners({
             click    : me.onClick,
             resize   : me.onResize,
+            scope    : me,
             touchmove: me.onTouchMove,
-            wheel    : me.onMouseWheel,
-            scope    : me
+            wheel    : {
+                bubble : false,
+                fn     : me.onMouseWheel,
+                local  : true,
+                passive: false
+            }
         })
     }
 
@@ -366,8 +375,20 @@ class Helix extends Component {
     afterSetMounted(value, oldValue) {
         super.afterSetMounted(value, oldValue);
 
+        let me = this;
+
         if (oldValue !== undefined) {
-            this.addResizeObserver(value)
+            me.addResizeObserver(value)
+        }
+
+        if (value && me.selectionModel?.hasSelection()) {
+            if (me[itemsMounted]) {
+                me.applyItemTransitions(me.moveToSelectedItem, 1000, me.selectionModel.items[0])
+            } else {
+                me.on('itemsMounted', () => {
+                    me.applyItemTransitions(me.moveToSelectedItem, 1000, me.selectionModel.items[0])
+                }, me, {once: true})
+            }
         }
     }
 
@@ -381,7 +402,7 @@ class Helix extends Component {
         let me = this;
 
         if (me.mounted) {
-            Neo.applyDeltas(me.appName, {
+            Neo.applyDeltas(me.windowId, {
                 id   : me.vdom.id,
                 style: {
                     perspective: value + 'px'
@@ -427,7 +448,8 @@ class Helix extends Component {
         super.afterSetWindowId(value, oldValue);
 
         if (value) {
-            this.imageSource = Neo.config.resourcesPath + 'examples/'
+            let appConfig = Neo.windowConfigs?.[value] || Neo.config;
+            this.imageSource = appConfig.resourcesPath + 'examples/'
         }
     }
 
@@ -450,19 +472,25 @@ class Helix extends Component {
         me.transitionTimeouts.splice(0, me.transitionTimeouts.length);
 
         if (me.mounted) {
-            Neo.applyDeltas(me.appName, {
+            Neo.applyDeltas(me.windowId, {
                 id,
                 cls: {
                     add   : [cls],
                     remove: []
                 }
             }).then(() => {
-                callback.apply(me, [callbackParam]);
-
+                // Awaited, not fire-and-forget. A transition can only START once the transform is
+                // applied, and the callback's work is unbounded — so a timer started here measures
+                // from the wrong event. Anchoring the window to the callback's completion means the
+                // class outlives the transform by construction rather than by winning a race: before
+                // the per-move layout heal was batched, the transform landed at 6780ms and the class
+                // was removed 13ms later, so the animation never ran.
+                return Promise.resolve(callback.apply(me, [callbackParam]))
+            }).then(() => {
                 timeoutId = setTimeout(() => {
                     NeoArray.remove(me.transitionTimeouts, timeoutId);
 
-                    Neo.applyDeltas(me.appName, {
+                    Neo.applyDeltas(me.windowId, {
                         id,
                         cls: {
                             add   : [],
@@ -563,9 +591,9 @@ class Helix extends Component {
     createItem(vdomItem, record, index) {
         let me = this;
 
-        vdomItem.id = me.getItemVnodeId(record[me.keyProperty]);
+        vdomItem.id = me.getItemVnodeId(me.getRecordId(record));
 
-        vdomItem.cn[0].id  = me.getItemVnodeId(record[me.keyProperty]) + '_img';
+        vdomItem.cn[0].id  = me.getItemVnodeId(me.getRecordId(record)) + '_img';
         vdomItem.cn[0].src = me.imageSource + Neo.ns(me.imageField, false, record);
 
         return vdomItem
@@ -577,11 +605,11 @@ class Helix extends Component {
      * @protected
      */
     createItems(startIndex) {
-        let me    = this,
+        let me                                                                                           = this,
             {deltaY, itemAngle, matrix, radius, rotationAngle, translateX, translateY, translateZ, vdom} = me,
-            group = me.getItemsRoot(),
-            i     = startIndex || 0,
-            len   = Math.min(me.maxItems, me.store.count),
+            group                                                                                        = me.getItemsRoot(),
+            i                                                                                            = startIndex || 0,
+            len                                                                                          = Math.min(me.maxItems, me.store.count),
             angle, item, matrixItems, transformStyle, vdomItem, c, s, x, y, z;
 
         if (!me.mounted) {
@@ -661,15 +689,17 @@ class Helix extends Component {
                 id     = me.getItemId(item.id);
                 record = store.get(id);
 
-                record.expanded = false;
+                if (record) {
+                    record.expanded = false;
 
-                deltas.push({
-                    id   : item.id,
-                    style: {
-                        opacity  : record.opacity,
-                        transform: record.transformStyle
-                    }
-                });
+                    deltas.push({
+                        id   : item.id,
+                        style: {
+                            opacity  : record.opacity,
+                            transform: record.transformStyle
+                        }
+                    })
+                }
 
                 removeDeltas.push({
                     id    : item.id,
@@ -679,9 +709,9 @@ class Helix extends Component {
 
             me.clonedItems = [];
 
-            Neo.applyDeltas(me.appName, deltas).then(data => {
+            Neo.applyDeltas(me.windowId, deltas).then(data => {
                 me.timeout(650).then(() => {
-                    Neo.applyDeltas(me.appName, removeDeltas)
+                    Neo.applyDeltas(me.windowId, removeDeltas)
                 })
             })
         }
@@ -706,10 +736,12 @@ class Helix extends Component {
         let me               = this,
             {appName, store} = me,
             record           = store.get(itemId),
-            index            = store.indexOf(itemId),
-            isExpanded       = !!record.expanded,
-            group            = me.getItemsRoot(),
-            itemVdom         = Neo.clone(group.cn[index], true);
+            index, isExpanded, group, itemVdom;
+
+        index      = store.indexOf(record);
+        isExpanded = !!record.expanded;
+        group      = me.getItemsRoot();
+        itemVdom   = Neo.clone(group.cn[index], true);
 
         me.destroyClones();
 
@@ -725,6 +757,7 @@ class Helix extends Component {
 
             if (me.showCloneInfo) {
                 itemVdom.cn.push({
+                    id  : me.getItemVnodeId(me.getRecordId(record)) + '__clone-info',
                     cls : ['contact-name'],
                     text: record.firstname + ' ' + record.lastname
                 })
@@ -735,12 +768,13 @@ class Helix extends Component {
                 autoMount  : true,
                 parentId   : group.id,
                 parentIndex: store.getCount(),
-                vdom       : itemVdom
+                vdom       : itemVdom,
+                windowId   : me.windowId
             }).then(data => {
                 me.clonedItems.push(itemVdom);
 
                 me.timeout(50).then(() => {
-                    Neo.applyDeltas(appName, {
+                    Neo.applyDeltas(me.windowId, {
                         id   : itemVdom.id,
                         style: {
                             opacity  : 1,
@@ -765,11 +799,25 @@ class Helix extends Component {
     }
 
     /**
+     * @param {Object} record
+     * @returns {String|Number}
+     */
+    getRecordId(record) {
+        return this.useInternalId ? this.store.getInternalId(record) : this.store.getKey(record)
+    }
+
+    /**
      * @param {String} vnodeId
      * @returns {Number}
      */
     getItemId(vnodeId) {
-        return parseInt(vnodeId.split('__')[1])
+        let itemId = vnodeId.split('__')[1];
+
+        if (!this.useInternalId) {
+            itemId = this.store.getCanonicalKey(itemId)
+        }
+
+        return itemId
     }
 
     /**
@@ -791,26 +839,27 @@ class Helix extends Component {
     /**
      *
      */
-    loadData() {
-        let me = this;
+    async loadData() {
+        let me = this,
+            data;
 
-        Neo.Xhr.promiseJson({
+        data = await me.trap(Neo.Xhr.promiseJson({
             insideNeo: true,
             url      : me.url
-        }).catch(err => {
-            console.log('Error for Neo.Xhr.request', err, me.id)
-        }).then(data => {
-            me.store.items = data.json.data;
-            me.createItems()
-        })
+        }));
+
+        me.store.items = data.json.data;
+        me.createItems()
     }
 
     /**
      * @param {String} itemId
      */
     moveToSelectedItem(itemId) {
-        let me = this;
-        me.rotationAngle = me.store.get(itemId).rotationAngle + me.rotationAngle
+        let me     = this,
+            record = me.store.get(itemId);
+
+        me.rotationAngle = record.rotationAngle + me.rotationAngle
     }
 
     /**
@@ -875,7 +924,7 @@ class Helix extends Component {
         if (clonedItems.length > 0) {
             id = clonedItems[0].id;
 
-            await Neo.applyDeltas(appName, {
+            await Neo.applyDeltas(me.windowId, {
                 id,
                 cls  : {remove: ['neo-transition-600']},
                 style: {transform: me.getCloneTransform()}
@@ -883,7 +932,7 @@ class Helix extends Component {
 
             await me.timeout(10);
 
-            await Neo.applyDeltas(appName, {id, cls: {add: ['neo-transition-600']}})
+            await Neo.applyDeltas(me.windowId, {id, cls: {add: ['neo-transition-600']}})
         }
     }
 
@@ -911,11 +960,26 @@ class Helix extends Component {
     }
 
     /**
+     * @summary Rebuilds every item vdom, then restores the selection annotation the rebuild destroys.
+     *
+     * `createItems` rebuilds each item from `itemTpl`, which carries no selection state, while
+     * `selection.Model` tracks *ids* and annotates the vdom *nodes* it resolved earlier. Those nodes are
+     * discarded here, so without the restore `hasSelection()` keeps reporting a selection that nothing
+     * renders, and `aria-selected` is dropped with it.
+     *
+     * Only the annotation is restored. Unlike {@link Neo.component.Gallery#onStoreLoad}, the post-sort
+     * visual pass is already owned by {@link Neo.component.Helix#onSort} → {@link Neo.component.Helix#sortItems}.
+     *
      * @param {Array} items
      */
     onStoreLoad(items) {
-        this.getItemsRoot().cn = []; // silent update
-        this.createItems()
+        let me = this,
+            sm = me.selectionModel;
+
+        me.getItemsRoot().cn = []; // silent update
+        me.createItems();
+
+        sm?.hasSelection() && sm.restoreSelection(true)
     }
 
     /**
@@ -932,12 +996,12 @@ class Helix extends Component {
      * @protected
      */
     refresh() {
-        let me     = this,
-            deltas = [],
-            {deltaY, flipped, itemAngle, matrix, radius, rotationAngle, rotationMatrix, translateX, translateY, translateZ, vdom} = me,
-            index  = 0,
-            len    = Math.min(me.maxItems, me.store.getCount()),
-            angle, item, opacity, rotateY, transformStyle, vdomItem, c, s, x, y, z;
+        let me                                                                                                              = this,
+            deltas                                                                                                          = [],
+            {deltaY, flipped, itemAngle, matrix, radius, rotationAngle, rotationMatrix, translateX, translateY, translateZ} = me,
+            index                                                                                                           = 0,
+            len                                                                                                             = Math.min(me.maxItems, me.store.getCount()),
+            angle, item, opacity, rotateY, transformStyle, c, s, x, y, z;
 
         if (flipped) {
             rotateY = Matrix.rotateY(180 * Math.PI / 180);
@@ -952,8 +1016,7 @@ class Helix extends Component {
         }
 
         for (; index < len; index++) {
-            item     = me.store.getAt(index);
-            vdomItem = vdom.cn[0].cn[0].cn[index];
+            item = me.store.getAt(index);
 
             angle = -rotationAngle + index * itemAngle;
 
@@ -976,7 +1039,6 @@ class Helix extends Component {
             }
 
             transformStyle = matrix.getTransformStyle();
-            matrix.destroy();
 
             Object.assign(item, {
                 rotationAngle: angle,
@@ -993,7 +1055,7 @@ class Helix extends Component {
             });
 
             deltas.push({
-                id   : me.getItemVnodeId(item[me.keyProperty]),
+                id   : me.getItemVnodeId(me.getRecordId(item)),
                 style: {
                     opacity,
                     transform: transformStyle
@@ -1001,7 +1063,10 @@ class Helix extends Component {
             })
         }
 
-        Neo.applyDeltas(me.appName, deltas)
+        // Returned so callers can anchor work to the transform actually being applied. `sortItems`
+        // relies on this to hold the transition window open past the transform rather than past a
+        // wall-clock timer started before it.
+        return Neo.applyDeltas(me.windowId, deltas)
     }
 
     /**
@@ -1012,36 +1077,32 @@ class Helix extends Component {
     }
 
     /**
+     * @summary Applies the post-sort transforms. Reordering is NOT done here.
      *
+     * `data.Store` re-fires a sort as a `load` (`Store.onCollectionSort`), and this component binds
+     * both events — so a single sort already drives {@link Helix#onStoreLoad}, which rebuilds the item
+     * vdom in the new order and lets the differ reorder the DOM. This method used to hand-write one
+     * `moveNode` delta per item on top of that, giving every sort two independent reorder passes over
+     * the same nodes: ~1176 moves where 590 suffice, on 590 items. Node reordering is the expensive
+     * operation in this component; the transform updates below are not.
+     *
+     * The manual pass was also the reason the vdom and the real DOM diverged across a sort — it moved
+     * nodes through `Neo.applyDeltas`, which the differ never sees.
+     *
+     * @returns {Promise<*>} Resolves once the transform deltas have been applied — the caller uses this
+     * to anchor the transition window to the transform, not to a wall-clock guess.
      */
     sortItems() {
-        let me       = this,
-            deltas   = [],
-            parentId = me.vdom.cn[0].cn[0].id,
-            i        = 0,
-            len      = Math.min(me.maxItems, me.store.getCount());
-
-        for (; i < len; i++) {
-            deltas.push({
-                action: 'moveNode',
-                id    : me.getItemVnodeId(me.store.getAt(i)[me.keyProperty]),
-                index : i,
-                parentId
-            })
-        }
-
-        Neo.applyDeltas(me.appName, deltas).then(() => {
-            me.refresh()
-        });
+        return this.refresh()
     }
 
     /**
      * @protected
      */
     updateCloneTranslate() {
-        let me           = this,
-            afterDeltas  = [],
-            deltas       = [],
+        let me          = this,
+            afterDeltas = [],
+            deltas      = [],
             timeoutId, transform;
 
         if (me.clonedItems.length > 0) {
@@ -1072,10 +1133,10 @@ class Helix extends Component {
                 });
             });
 
-            Neo.applyDeltas(me.appName, deltas).then(() => {
+            Neo.applyDeltas(me.windowId, deltas).then(() => {
                 timeoutId = setTimeout(() => {
                     NeoArray.remove(me.transitionTimeouts, timeoutId);
-                    Neo.applyDeltas(me.appName, afterDeltas)
+                    Neo.applyDeltas(me.windowId, afterDeltas)
                 }, 200);
 
                 me.transitionTimeouts.push(timeoutId)

@@ -53,10 +53,10 @@ class MainContainerStateProvider extends StateProvider {
          * @member {Object} stores
          */
         stores: {
-            contentSections: {
+            sections: {
                 module: ContentSectionStore
             },
-            contentTree: {
+            tree: {
                 module: ContentStore
             }
         }
@@ -82,9 +82,9 @@ class MainContainerStateProvider extends StateProvider {
             }
 
             case 'currentPageRecord': {
-                let data               = me.data,
-                    countPages         = data.countPages,
-                    store              = me.getStore('contentTree'),
+                let {data}             = me,
+                    {countPages}       = data,
+                    store              = me.getStore('tree'),
                     index              = store.indexOf(value),
                     nextPageRecord     = null,
                     nextPageText       = null,

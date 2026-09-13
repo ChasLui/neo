@@ -1,5 +1,6 @@
 import Base            from '../core/Base.mjs';
 import DomEventManager from '../manager/DomEvent.mjs';
+import {isDescriptor}  from '../core/ConfigSymbols.mjs';
 
 /**
  * A mixin providing DOM event handling capabilities to components.
@@ -31,7 +32,11 @@ class DomEvents extends Base {
          *}
          * @reactive
          */
-        domListeners_: null
+        domListeners_: {
+            [isDescriptor]: true,
+            cloneOnGet    : 'shallow',
+            value         : null
+        }
     }
 
     /**
@@ -90,6 +95,13 @@ class DomEvents extends Base {
                 DomEventManager.mountDomListeners(me)
             })
         }
+    }
+
+    /**
+     * Resets the mounted flag for local domEvent listeners
+     */
+    resetMountedDomEvents() {
+        DomEventManager.resetMountedDomListeners(this)
     }
 
     /**

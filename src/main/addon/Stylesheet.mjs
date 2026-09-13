@@ -47,18 +47,22 @@ class Stylesheet extends Base {
             env       = neoConfig.environment,
             faPath;
 
-        if (neoConfig.useFontAwesome) {
-            if (env === 'development' || env === 'dist/esm') {
-                faPath = neoConfig.basePath + 'node_modules/@fortawesome/fontawesome-free/css/all.min.css'
-            } else {
-                faPath = neoConfig.basePath.substring(6) + 'resources/fontawesome-free/css/all.min.css'
+        if (!neoConfig.useSSR) {
+            if (neoConfig.useFontAwesome) {
+                if (env === 'development' || env === 'dist/esm') {
+                    faPath = neoConfig.basePath + 'node_modules/@fortawesome/fontawesome-free/css/all.min.css'
+                } else {
+                    faPath = neoConfig.basePath.substring(6) + 'resources/fontawesome-free/css/all.min.css'
+                }
+
+                this.createStyleSheet({
+                    href: faPath
+                })
             }
 
-            this.createStyleSheet(null, null, faPath)
-        }
-
-        if (neoConfig.themes.length > 0 && neoConfig.themes[0] !== '') {
-            this.addGlobalCss()
+            if (neoConfig.themes.length > 0 && neoConfig.themes[0] !== '') {
+                this.addGlobalCss()
+            }
         }
     }
 
@@ -80,15 +84,22 @@ class Stylesheet extends Base {
                 folder = folder.substring(4)
             }
 
-            this.createStyleSheet(
-                null,
-                null,
-                `${rootPath}${path}css/${folder}/Global.css`
-            )
+            this.createStyleSheet({
+                href: `${rootPath}${path}css/${folder}/Global.css`
+            })
         })
     }
 
     /**
+     * Loads one file per class per declared theme. The fan-out is intentional and bundling is not
+     * an available alternative: any component tree, at any nesting depth, can be moved from the
+     * main window into another one, so a second window's class set is not knowable ahead of time.
+     * Pre-bundling would mean shipping every possible combination of those trees — which costs more
+     * than it saves and still cannot cover a combination nobody anticipated.
+     *
+     * File granularity is what makes the delta work instead: a window fetches exactly the classes
+     * it ends up rendering, and a single changed class is swapped in every open window without
+     * rebuilding anything. The per-class request count is the price of that, deliberately paid.
      * @param {Object} data
      * @param {String} data.appName
      * @param {String} data.className
@@ -110,11 +121,9 @@ class Stylesheet extends Base {
 
         data.folders.forEach(folder => {
             if (folder === 'src' || folder.includes('theme-') && config.themes.includes(`neo-${folder}`)) {
-                promises.push(this.createStyleSheet(
-                    null,
-                    null,
-                    `${rootPath}${path}css/${folder}/${className}.css`
-                ))
+                promises.push(this.createStyleSheet({
+                    href: `${rootPath}${path}css/${folder}/${className}.css`
+                }))
             }
         });
 
@@ -123,12 +132,13 @@ class Stylesheet extends Base {
 
     /**
      * Use either name for a neo theme (e.g. 'neo-theme-dark.css') or pass a href
-     * @param {String} [name]
-     * @param {String} [id]
-     * @param {String} [href]
+     * @param {Object} data
+     * @param {String} [data.name]
+     * @param {String} [data.id]
+     * @param {String} [data.href]
      * @returns {Promise<void>}
      */
-    async createStyleSheet(name, id, href) {
+    async createStyleSheet({name, id, href}) {
         if (!name && !href) {
             throw new Error('createStyleSheet: you need to either pass a name or a href')
         }
@@ -149,7 +159,7 @@ class Stylesheet extends Base {
                 link.id = id
             }
 
-            link.addEventListener('error', function() {reject()})
+            link.addEventListener('error', function() {reject(new Error(`Stylesheet failed to load: ${url}`))})
             link.addEventListener('load',  function() {resolve()})
 
             document.head.appendChild(link)

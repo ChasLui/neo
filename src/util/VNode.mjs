@@ -15,6 +15,71 @@ class VNode extends Base {
     }
 
     /**
+     * Creates a flat map of the vnode tree, containing ids as keys and vnodes as values.
+     * This is highly optimized for performance to eliminate O(N²) lookups during tree syncing.
+     * @param {Object} vnode
+     * @param {Map}    [map=new Map()]
+     * @returns {Map}
+     */
+    static createMap(vnode, map = new Map()) {
+        vnode = VNode.getVnode(vnode);
+
+        if (vnode) {
+            // Strict ID matching: VNodeUtil.find(opts) specifically checks vnode.hasOwnProperty('id')
+            // It does not match raw placeholders that only have componentId.
+            let id = vnode.id;
+
+            // First-match wins: VNodeUtil.find is a top-down pre-order traversal that returns the first match.
+            // We must not overwrite an existing ID if we encounter duplicates or stale wrappers deeper in the tree.
+            if (id && !map.has(id)) {
+                map.set(id, vnode);
+            }
+
+            let childNodes = vnode.childNodes;
+            if (childNodes) {
+                for (let i = 0, len = childNodes.length; i < len; i++) {
+                    VNode.createMap(childNodes[i], map);
+                }
+            }
+        }
+
+        return map;
+    }
+
+    /**
+     * Removes, in place, every `{componentId}` reference whose component has left the registry from a
+     * flight's RETURNED vnode tree, before the tree is adopted and walked. A child retired silently —
+     * destroyed without an update of its own — takes its vdom, its DOM node and its place in its
+     * parent's stored vnode with it; the one tree that can still name it is a flight collected while
+     * it was alive and landing after. The walkers here resolve references strictly, so this runs once
+     * at the landing boundary and only over the tree's own inline nodes: a live reference is kept as a
+     * reference, never followed — the stored vnode behind it is that component's own to keep clean.
+     * @param {Object} vnode
+     * @returns {Number} The number of references removed
+     */
+    static pruneRetiredReferences(vnode) {
+        let childNodes = vnode?.childNodes,
+            removed    = 0;
+
+        if (childNodes) {
+            for (let i = childNodes.length - 1; i >= 0; i--) {
+                const child = childNodes[i];
+
+                if (child?.componentId) {
+                    if (!ComponentManager.get(child.componentId)) {
+                        childNodes.splice(i, 1);
+                        removed++
+                    }
+                } else {
+                    removed += VNode.pruneRetiredReferences(child)
+                }
+            }
+        }
+
+        return removed
+    }
+
+    /**
      * Search vnode child nodes by id or opts object for a given vdom tree
      * @param {Object} vnode
      * @param {Object|String} opts Either an object containing vdom node attributes or a string based id
@@ -117,6 +182,10 @@ class VNode extends Base {
     static getById(vnode, id) {
         vnode = VNode.getVnode(vnode);
 
+        if (!vnode) {
+            return null
+        }
+
         let childNodes = vnode.childNodes || [],
             i          = 0,
             len        = childNodes.length,
@@ -129,14 +198,16 @@ class VNode extends Base {
         for (; i < len; i++) {
             childNode = VNode.getVnode(childNodes[i]);
 
-            if (childNode.id === id) {
-                return childNode
-            }
-
-            childNode = VNode.getById(childNode, id);
-
             if (childNode) {
-                return childNode
+                if (childNode.id === id) {
+                    return childNode
+                }
+
+                childNode = VNode.getById(childNode, id);
+
+                if (childNode) {
+                    return childNode
+                }
             }
         }
 
@@ -167,7 +238,7 @@ class VNode extends Base {
      * @returns {Object}
      */
     static getVnode(vnode) {
-        if (vnode.componentId) {
+        if (vnode?.componentId) {
             const component = ComponentManager.get(vnode.componentId);
 
             if (!component) {

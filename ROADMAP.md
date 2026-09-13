@@ -1,29 +1,40 @@
 # Neo.mjs Project Roadmap
 
-## Vision
+The roadmap holds the **next-release scope only** — what ships next and why. Everything else has a canonical home:
 
-To provide a robust, high-performance, and developer-friendly framework that leverages modern web technologies to their full potential, enhanced by a deeply integrated, stateful AI development partner.
+- **Vision & positioning:** [`.github/VISION.md`](.github/VISION.md)
+- **Architecture:** [Engine and ecosystem overview](learn/benefits/ArchitectureOverview.md) · [Brain: Dream Pipeline & Golden Path](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/DreamPipeline.md)
+- **Shipped history:** the [Engine release notes](resources/content/release-notes/) ([v13.1.0](resources/content/release-notes/chunk-2/v13.1.0.md)) + the [v13 architectural path](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/v13-path.md)
 
-## Current Release Focus
+## Next: v13.2 — A Harness You Can Download, Run, and Steer
 
-This section outlines the major initiatives for the current development cycle, in order of priority.
+v13.1 made the institution safe to leave running; **v13.2 turns that institution into a runnable local product.** The release gate is the behavior we need to ship:
 
-1.  **Epic: AI Knowledge Evolution**
-    -   **Goal:** Transform the agent into a stateful, learning contributor with a persistent, local memory.
-    -   **Impact:** Fundamentally enhances the collaborative workflow, enabling faster, more context-aware development. This is the highest priority.
+> **A developer downloads and runs the local harness without hand-editing config; the operator starts an agent from the cockpit UI instead of a terminal; the Docker-based local Agent OS satisfies the [v13.2 One Reality contract](https://github.com/neomjs/neo/issues/15798), so dogfood and debugging exercise the runtime we deploy; the docking demos are public, animated, and e2e-tested; and flagship demos prove working product flows.**
 
-2.  **Epic: Enhance Development Workflow with Mandatory Unit Testing**
-    -   **Goal:** Migrate all unit tests to a scriptable Node.js runner and integrate mandatory testing into the agent's workflow.
-    -   **Impact:** Ensures code stability, prevents regressions, and solidifies the framework's core APIs.
+This section names the gate and the load-bearing path, not a frozen checklist. [Milestone #9](https://github.com/neomjs/neo/milestone/9) is the v13.2 tracking milestone — the cornerstone epics anchor into it as the scope opens.
 
-3.  **Epic: Enhance Development Workflow with a Planning Phase**
-    -   **Goal:** Formalize the use of this roadmap to guide all major development efforts.
-    -   **Impact:** Ensures all work is aligned with long-term strategic goals.
+**v13.2 is the first org-spanning release.** Since the repository split, the gate behavior above crosses four repos: [neomjs/neo](https://github.com/neomjs/neo) (the engine), [neo-agent-institution](https://github.com/neomjs/neo-agent-institution) (the Agent Institution product), [neo-agent-brain](https://github.com/neomjs/neo-agent-brain) (the Agent OS runtime), and [neo-agent-skills](https://github.com/neomjs/neo-agent-skills) (the agent process substrate). Engine milestone #9 keeps tracking engine scope; cross-repo cornerstones name their repos in place, and consumer repos pin the engine by commit until their consumer PRs land — release ordering, not compatibility layers.
 
-## Next Up
+**The load-bearing path — six cornerstones:**
 
--   (To be determined)
+| Cornerstone | Anchors | Done signal |
+|---|---|---|
+| **FM cockpit product arc** — the design-led surface + shell + wiring ("download and run") | [#14560](https://github.com/neomjs/neo/issues/14560) · [#13015](https://github.com/neomjs/neo/issues/13015) · [#13033](https://github.com/neomjs/neo/issues/13033) · [#13448](https://github.com/neomjs/neo/issues/13448) (floor) | the §04 PoC bar: @tobiu starts an agent from the UI, not a terminal |
+| **Qt-parity docking + stunning demos** — the flagship: the greenfield DockLayouts rewrite (engine + Institution), NL-driven, animated, e2e-tested | [#13158](https://github.com/neomjs/neo/issues/13158) · [D#17818](https://github.com/neomjs/neo/discussions/17818) (the rewrite ideation — its implementation epic replaces this anchor at graduation; + the #14587/#14589/#14590/#14591 batch) | the rewrite is release-gating: D#17818 graduates and its implementation lands (engine hard cut + Institution consumer PR) before the cut; ≥2 public demos with deterministic tour modes; the pillar-1×2 fusion demo (cockpit → docked panel → OS window → share) as the flagship |
+| **Golden Path v2 — the floor** — never empty, direction-attributed, honest states | [#14472](https://github.com/neomjs/neo/issues/14472) · [#14565](https://github.com/neomjs/neo/issues/14565) (subs #14566–#14568) · [#14581](https://github.com/neomjs/neo/issues/14581) | zero-route regression fixed with fixtures (#14588 class); `INTENT_STARVED` renders; the `not-code-ready` backlog re-triaged to honest states |
+| **Local-first Agent OS onboarding** | [#14230](https://github.com/neomjs/neo/issues/14230) | the supported local setup path reaches a running Agent OS / Fleet Manager surface without hand-edited config; fork → running Agent OS → claimed lane → PR is runnable locally |
+| **One Reality — Docker-canonical local/cloud Agent OS** | [#15798](https://github.com/neomjs/neo/issues/15798) · [D#15595](https://github.com/orgs/neomjs/discussions/15595) · [#15490](https://github.com/neomjs/neo/issues/15490) | @tobiu's machine and cloud run one Docker-canonical Agent OS topology; managed seats consume Memory Core and Knowledge Base through the same authenticated HTTP ingress; only irreducibly host-bound wake/session, Neural Link, and repository-workflow effects remain local; native MC/KB stdio, parallel-plane rehearsal, and cutover compatibility paths are removed after the switch |
+| **Brain coherence + runtime discipline** | [#12456](https://github.com/neomjs/neo/issues/12456) (AiConfig cleanup — grind class) · [#14442](https://github.com/neomjs/neo/issues/14442) discipline over A+B's demos | AiConfig cleanup lands without new config drift; demo work proves real product behavior; the CEO-dashboard slice stays gated on [#14472](https://github.com/neomjs/neo/issues/14472) |
 
-## Backlog / Ideas
+**How it runs.** Sequencing honors the coherence-first ordering inside the milestone: the Brain-coherence floor (GP-floor + self-config) and the Local Runtime Parity spine land early; the cockpit PoC and demo polish land on top of the runtime we will actually deploy. Each cornerstone has a self-selected steward driving its outcome — [#15798](https://github.com/neomjs/neo/issues/15798) and cornerstone 2's rewrite path ([D#17818](https://github.com/neomjs/neo/discussions/17818) → its implementation epic at graduation) are stewarded by @neo-fable, and cornerstone 6's business epic [#14442](https://github.com/neomjs/neo/issues/14442) is Grace's on the record. Any peer claims subs. **The AiConfig-cleanup grind ([#12456](https://github.com/neomjs/neo/issues/12456)) is DONE** — closed 2026-07-16 with all ten subs landed, so it is no longer the unclaimed anchor this section named; ADR 0019 plus its lint now hold that floor, and new `ai/` config work consults the ADR rather than this epic. The identity render rules for every cockpit surface are governed by ADR 0032 ([#14445](https://github.com/neomjs/neo/issues/14445) — CLOSED; the ADR is authoritative now, not a pending gate). Cadence: parity is part of the release gate, not an overflow candidate; optional polish yields before One Reality does, and the deferred set holds firm.
 
--   (To be determined)
+**Deferred — explicitly off the v13.2 path:**
+
+- **v13.3 — the traction completion:** the Salute narrative ([PR #14597](https://github.com/neomjs/neo/pull/14597)), demo scale-out. (The direction-weather render is NOT deferred — [#14570](https://github.com/neomjs/neo/issues/14570) was pulled into v13.2 by [#15217](https://github.com/neomjs/neo/issues/15217) and carries milestone #9.)
+- **v14 — the Institution Cockpit implementation** ([#13444](https://github.com/neomjs/neo/issues/13444)): COP rendering + identity-state substrate ([#11318](https://github.com/neomjs/neo/issues/11318)) beyond the ADR; the **VISION.md severe update** stays sequenced behind that ADR authority (the overclaim guard), together with the ROADMAP v14-horizon reflection.
+- **[#14304](https://github.com/neomjs/neo/issues/14304)** carries zero weight until its stale body is re-triaged (the re-triage itself belongs to the GP-floor's `not-code-ready` cleanup).
+- **[#12679](https://github.com/neomjs/neo/issues/12679)** is not its own cornerstone — its live temporal-pyramid subs ride the GP-floor.
+- **Deferred substrate epics (unchanged):** the GitLab Workflow MCP server ([#11404](https://github.com/neomjs/neo/issues/11404)), cognitive-load audit cycle 2 ([#10757](https://github.com/neomjs/neo/issues/10757)), Agent OS v3 ([#9950](https://github.com/neomjs/neo/issues/9950)), the RLAIF reward pipeline ([#9904](https://github.com/neomjs/neo/issues/9904)), the vdom delta-stream contract ([#12986](https://github.com/neomjs/neo/issues/12986)), Grid Multi-Body ([#9486](https://github.com/neomjs/neo/issues/9486)), Concept Ontology ([#10030](https://github.com/neomjs/neo/issues/10030)).
+
+**Session intake** for contributors and agents: start from this roadmap, then [D#14561](https://github.com/neomjs/neo/discussions/14561) for context, [milestone #9](https://github.com/neomjs/neo/milestone/9) for live tracking, and the [scope ledger D#15209](https://github.com/orgs/neomjs/discussions/15209) for the living release-gate coverage map. If the work serves a cornerstone, attach it under the matching epic as a one-PR engineering leaf; if it is COP/v14 territory, keep it deferred rather than smuggling it into v13.2. The 2026-07-04 planning tickets are not release scope by themselves; do not treat [#14782](https://github.com/neomjs/neo/issues/14782), [#14790](https://github.com/neomjs/neo/issues/14790), or [#14780](https://github.com/neomjs/neo/issues/14780) as substitutes for implementation.

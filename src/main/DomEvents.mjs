@@ -18,7 +18,7 @@ const globalDomEvents = [
     {name: 'mouseleave',  handler: 'onMouseLeave', options: {capture: true}},
     {name: 'mouseup',     handler: 'onMouseUp'},
     {name: 'scroll',      handler: 'onScroll',     options: {capture: true}},
-    {name: 'wheel',       handler: 'onWheel',      options: {passive: false}}
+    {name: 'wheel',       handler: 'onWheel',      options: {passive: true}}
 ];
 
 // Will get applied to the document.body in case Neo.config.hasTouchEvents === true
@@ -114,10 +114,18 @@ class DomEvents extends Base {
     }
 
     /**
+     * @member {Object|null} lastMouseMoveData=null
+     */
+    lastMouseMoveData = null
+    /**
      *
      * @member {Object} touch
      */
     lastTouch = null
+    /**
+     * @member {Number|null} mouseMoveReqId=null
+     */
+    mouseMoveReqId = null
 
     /**
      * @param {Object} config
@@ -129,8 +137,10 @@ class DomEvents extends Base {
 
         document.addEventListener('DOMContentLoaded',  me.onDomContentLoaded .bind(me));
         document.addEventListener('selectionchange',   me.onSelectionChange  .bind(me));
+        document.addEventListener('visibilitychange',  me.onVisibilitychange .bind(me));
         window  .addEventListener('orientationchange', me.onOrientationChange.bind(me));
         window  .addEventListener('hashchange',        me.onHashChange       .bind(me));
+        window  .addEventListener('blur',              me.onWindowBlur       .bind(me));
 
         if (Neo.config.useSharedWorkers) {
             window.addEventListener('beforeunload', me.onBeforeUnload.bind(me))
@@ -165,7 +175,7 @@ class DomEvents extends Base {
             }
 
             if (targetNode) {
-                targetNode.addEventListener(event.name, me[event.handler].bind(me))
+                targetNode.addEventListener(event.name, me[event.handler].bind(me), event.options)
             } else {
                 failedId = id
             }
@@ -218,7 +228,9 @@ class DomEvents extends Base {
                 Object.assign(config.data, me.getMouseEventData(event));
                 break
             default:
-                event.preventDefault();
+                if (event.cancelable) {
+                    event.preventDefault()
+                }
                 break
         }
 
@@ -269,19 +281,18 @@ class DomEvents extends Base {
 
         if (path.length < 1) {
             // our draggable implementation will generate paths, so we do need to check for them
-            path = event.path;
+            path = event.path || [];
         }
 
         const result = {
-            path     : path.map(e => this.getTargetData(e)),
-            target   : this.getTargetData(event.target),
+            path     : path.map(e => this.getTargetData(e, event.type, false)),
+            target   : this.getTargetData(event.target, event.type, true),
             timeStamp: event.timeStamp,
             type     : event.type,
-            data     : {...event.target.dataset}
         };
 
         if (event.relatedTarget) {
-            result.relatedTarget = this.getTargetData(event.relatedTarget)
+            result.relatedTarget = this.getTargetData(event.relatedTarget, event.type, false)
         }
 
         return result
@@ -311,11 +322,13 @@ class DomEvents extends Base {
      * @returns {Object}
      */
     getMouseEventData(event) {
-        let {altKey, clientX, clientY, ctrlKey, detail, metaKey, offsetX, offsetY, pageX, pageY, screenX, screenY, shiftKey} = event;
+        let {altKey, button, buttons, clientX, clientY, ctrlKey, detail, metaKey, offsetX, offsetY, pageX, pageY, screenX, screenY, shiftKey} = event;
 
         return {
             ...this.getEventData(event),
             altKey,
+            button,
+            buttons,
             clientX,
             clientY,
             ctrlKey,
@@ -353,34 +366,40 @@ class DomEvents extends Base {
     /**
      * @param {Object[]} path
      * @param {HTMLElement} target
+     * @param {String} [eventName]
      * @returns {Object[]}
      */
-    getSelectionPath(path, target) {
+    getSelectionPath(path, target, eventName) {
         if (target.parentNode && target.id.split('__').length > 1) {
-            path = this.getSelectionPath(path, target.parentNode);
+            path = this.getSelectionPath(path, target.parentNode, eventName);
         }
 
-        path.push(this.getTargetData(target));
+        path.push(this.getTargetData(target, eventName, false));
 
         return path
     }
 
     /**
      * @param {HTMLElement} node
+     * @param {String} [eventName]
+     * @param {Boolean} [isTarget=true]
      * @returns {Object}
      */
-    getTargetData(node) {
-        let r    = node.getBoundingClientRect?.(),
-            rect = r && this.parseDomRect(r) || {};
+    getTargetData(node, eventName, isTarget=true) {
+        // Fast path: eliminate layout thrashing on continuous events.
+        // We skip bounding rect and layout dimensions for scroll & wheel.
+        let skipLayout = eventName === 'scroll' || eventName === 'wheel',
+            r          = !skipLayout && node.getBoundingClientRect?.(),
+            rect       = r && this.parseDomRect(r) || undefined;
 
         return {
             aria             : this.geAriaAttributes(node),
             checked          : node.checked,
             childElementCount: node.childElementCount,
-            clientHeight     : node.clientHeight,
+            clientHeight     : skipLayout ? undefined : node.clientHeight,
             clientLeft       : node.clientLeft,
             clientTop        : node.clientTop,
-            clientWidth      : node.clientWidth,
+            clientWidth      : skipLayout ? undefined : node.clientWidth,
             cls              : node.classList ? [...node.classList] : [],
             data             : {...node.dataset},
             draggable        : node.draggable,
@@ -390,16 +409,16 @@ class DomEvents extends Base {
             isConnected      : node.isConnected,
             isContentEditable: node.isContentEditable,
             nodeType         : node.nodeType,
-            offsetHeight     : node.offsetHeight,
+            offsetHeight     : skipLayout ? undefined : node.offsetHeight,
             offsetLeft       : node.offsetLeft,
             offsetTop        : node.offsetTop,
-            offsetWidth      : node.offsetWidth,
+            offsetWidth      : skipLayout ? undefined : node.offsetWidth,
             rect,
             role             : node.role,
-            scrollHeight     : node.scrollHeight,
-            scrollLeft       : node.scrollLeft,
-            scrollTop        : node.scrollTop,
-            scrollWidth      : node.scrollWidth,
+            scrollHeight     : skipLayout ? undefined : node.scrollHeight,
+            scrollLeft       : skipLayout && !isTarget ? undefined : node.scrollLeft,
+            scrollTop        : skipLayout && !isTarget ? undefined : node.scrollTop,
+            scrollWidth      : skipLayout ? undefined : node.scrollWidth,
             style            : node.style?.cssText,
             tabIndex         : node.getAttribute?.('tabindex') ? node.tabIndex : null,
             tagName          : node.tagName?.toLowerCase()
@@ -507,6 +526,40 @@ class DomEvents extends Base {
     }
 
     /**
+     * Focus crossing into a nested document is invisible to the focus events this document forwards:
+     * the element losing focus fires `focusout` with no `relatedTarget`, the `<iframe>` element that
+     * now holds it fires no `focusin`, and only the window's `blur` says anything happened. Without a
+     * `focusin` the app worker's focus manager reads the `focusout` as a leave after its gap — a
+     * click into an iframe INSIDE a focus-holding subtree looks like leaving it. This forwards the
+     * frame element as the focus target, so the worker sees a move to the component that hosts the
+     * frame. `activeElement` settles after `blur`, hence the deferral; a blur that leaves the
+     * document altogether (another window) has no iframe at the active element and forwards nothing.
+     */
+    onWindowBlur() {
+        let me = this;
+
+        setTimeout(() => {
+            let node = document.activeElement,
+                path = [];
+
+            if (node?.tagName !== 'IFRAME') {
+                return
+            }
+
+            for (let current = node; current; current = current.parentNode) {
+                path.push(current)
+            }
+
+            me.sendMessageToApp(me.getEventData({
+                composedPath: () => path,
+                target      : node,
+                timeStamp   : performance.now(),
+                type        : 'focusin'
+            }))
+        }, 0)
+    }
+
+    /**
      *
      */
     onHashChange() {
@@ -546,6 +599,10 @@ class DomEvents extends Base {
                 event.preventDefault()
             }
 
+            // Arrows drive roving / efficiency focus within a neo-selection region and may not scroll the
+            // page. The app still receives the keydown (sendMessageToApp above) — this only suppresses the
+            // browser's scroll default. Space is intentionally NOT suppressed here: native interactive
+            // targets (buttons, selects, links, contenteditable) own Enter/Space activation.
             if (
                 !isInput &&
                 ['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp'].includes(event.key) &&
@@ -590,6 +647,33 @@ class DomEvents extends Base {
 
         me.sendMessageToApp(appEvent);
         me.fire('mouseLeave', appEvent)
+    }
+
+    /**
+     * @param {MouseEvent} event
+     */
+    onMouseMove(event) {
+        let me = this;
+
+        me.lastMouseMoveData = me.getMouseEventData(event);
+
+        if (!me.mouseMoveReqId) {
+            me.mouseMoveReqId = requestAnimationFrame(me.flushMouseMove.bind(me))
+        }
+    }
+
+    /**
+     *
+     */
+    flushMouseMove() {
+        let me = this;
+
+        if (me.lastMouseMoveData) {
+            me.sendMessageToApp(me.lastMouseMoveData);
+            me.lastMouseMoveData = null
+        }
+
+        me.mouseMoveReqId = null
     }
 
     /**
@@ -670,6 +754,20 @@ class DomEvents extends Base {
     /**
      * @param {Event} event
      */
+    onVisibilitychange(event) {
+        Neo.worker.Manager.sendMessage('app', {
+            action: 'visibilityChange',
+            data  : {
+                hidden         : document.hidden,
+                visibilityState: document.visibilityState,
+                windowId       : Neo.worker.Manager.windowId
+            }
+        })
+    }
+
+    /**
+     * @param {Event} event
+     */
     onWheel(event) {
         let target        = this.testPathInclusion(event, globalWheelTargets),
             preventUpdate = false,
@@ -707,7 +805,10 @@ class DomEvents extends Base {
             }
 
             if (!globalWheelTargetsKeepEvent.includes(targetCls)) {
-                event.preventDefault()
+                if (event.currentTarget !== document.body) {
+                    event.preventDefault();
+                    event.stopPropagation()
+                }
             }
         }
     }

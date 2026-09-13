@@ -30,7 +30,7 @@ class Gallery extends Component {
         amountRows_: 3,
         /**
          * The background color of the gallery container
-         * @member {String} backgroundColor_='#000000'
+         * @member {String} backgroundColor_='#000000' [not-ticket-ref: css-color]
          * @reactive
          */
         backgroundColor_: '#000000',
@@ -167,6 +167,10 @@ class Gallery extends Component {
          */
         translateZ_: 0,
         /**
+         * @member {Boolean} useInternalId=true
+         */
+        useInternalId: true,
+        /**
          * @member {Object} _vdom
          */
         _vdom:
@@ -193,8 +197,13 @@ class Gallery extends Component {
 
         me.addDomListeners({
             click: me.onClick,
-            wheel: me.onMouseWheel,
-            scope: me
+            scope: me,
+            wheel: {
+                bubble : false,
+                fn     : me.onMouseWheel,
+                local  : true,
+                passive: false
+            }
         })
     }
 
@@ -213,13 +222,10 @@ class Gallery extends Component {
     }
 
     /**
-     * Triggered after the id config got changed
-     * @param {String} value
-     * @param {String} oldValue
      * @protected
      */
-    afterSetId(value, oldValue) {
-        super.afterSetId(value, oldValue);
+    ensureStableIds() {
+        super.ensureStableIds();
 
         let me     = this,
             origin = me.vdom.cn[0],
@@ -231,9 +237,7 @@ class Gallery extends Component {
         camera.id = prefix + 'camera';
         dolly .id = prefix + 'dolly';
         origin.id = prefix + 'origin';
-        view  .id = prefix + 'view';
-
-        me.update()
+        view  .id = prefix + 'view'
     }
 
     /**
@@ -268,7 +272,7 @@ class Gallery extends Component {
             me.focusOnMount && me.focus(me.id);
 
             me.timeout(300).then(() => {
-                Neo.currentWorker.promiseMessage('main', {
+                Neo.currentWorker.promiseMessage(me.windowId, {
                     action    : 'readDom',
                     appName   : me.appName,
                     attributes: ['offsetHeight', 'offsetWidth'],
@@ -285,7 +289,7 @@ class Gallery extends Component {
                         if (!key) {
                             let index = parseInt(Math.min(me.maxItems, me.store.getCount()) / me.amountRows);
 
-                            key = me.store.getKeyAt(index)
+                            key = me.getRecordId(me.store.getAt(index))
                         }
 
                         selectionModel.select(key)
@@ -357,10 +361,11 @@ class Gallery extends Component {
 
         oldValue?.destroy();
 
+        // No `sort` listener: `Store.onCollectionSort` re-fires a sort as a `load`, and `onStoreLoad`
+        // rebuilds the items in the new order. A second handler could only ever see the corrected order.
         return ClassSystemUtil.beforeSetInstance(value, Store, {
             listeners  : {
                 load : me.onStoreLoad,
-                sort : me.onSort,
                 scope: me
             }
         })
@@ -401,9 +406,10 @@ class Gallery extends Component {
         let me        = this,
             imageVdom = vdomItem.cn[0].cn[0];
 
-        vdomItem.id = me.getItemVnodeId(record[me.keyProperty]);
+        vdomItem.id = me.getItemVnodeId(me.getRecordId(record));
 
-        imageVdom.src = Neo.config.resourcesPath + 'examples/' + record.image;
+        let appConfig = Neo.windowConfigs?.[me.windowId] || Neo.config;
+        imageVdom.src = appConfig.resourcesPath + 'examples/' + record.image;
 
         imageVdom.style.height = me.itemHeight + 'px';
         imageVdom.style.width  = me.itemWidth  + 'px';
@@ -505,7 +511,21 @@ class Gallery extends Component {
      * @returns {Number} itemId
      */
     getItemId(vnodeId) {
-        return parseInt(vnodeId.split('__')[1])
+        let itemId = vnodeId.split('__')[1];
+
+        if (!this.useInternalId) {
+            itemId = this.store.getCanonicalKey(itemId)
+        }
+
+        return itemId
+    }
+
+    /**
+     * @param {Object} record
+     * @returns {String|Number}
+     */
+    getRecordId(record) {
+        return this.useInternalId ? this.store.getInternalId(record) : this.store.getKey(record)
     }
 
     /**
@@ -596,15 +616,22 @@ class Gallery extends Component {
      * @param {Array} value
      */
     onSelectionChange(value) {
-        let me             = this,
-            index          = me.store.indexOf(value?.[0] || 0),
-            {appName, id, itemHeight, itemWidth, windowId} = me,
-            camera         = me.vdom.cn[0].cn[0],
-            cameraStyle    = camera.style,
-            dollyTransform = me.getCameraTransformForCell(index),
-            height         = me.offsetHeight / (me.amountRows + 2),
-            width          = Math.round(height * itemWidth / itemHeight),
-            spacing        = width + 10,
+        let me       = this,
+            selected = value?.[0] || 0,
+            record   = me.store.get(selected),
+            index    = me.store.indexOf(record);
+
+        if (index === -1) {
+            index = 0
+        }
+
+        let {appName, id, itemHeight, itemWidth, windowId} = me,
+            camera                                         = me.vdom.cn[0].cn[0],
+            cameraStyle                                    = camera.style,
+            dollyTransform                                 = me.getCameraTransformForCell(index),
+            height                                         = me.offsetHeight / (me.amountRows + 2),
+            width                                          = Math.round(height * itemWidth / itemHeight),
+            spacing                                        = width + 10,
             timeoutId;
 
         me.transitionTimeouts.forEach(item => {
@@ -613,19 +640,13 @@ class Gallery extends Component {
 
         me.transitionTimeouts.splice(0, me.transitionTimeouts.length);
 
-        Neo.currentWorker.promiseMessage('main', {
-            action : 'updateDom',
-            appName,
-            windowId,
-
-            deltas: {
-                id   : id + '__dolly',
-                style: {
-                    transform: me.translate3d(...dollyTransform)
-                }
+        Neo.applyDeltas(windowId, {
+            id   : id + '__dolly',
+            style: {
+                transform: me.translate3d(...dollyTransform)
             }
         }).then(() => {
-            Neo.currentWorker.promiseMessage('main', {
+            Neo.currentWorker.promiseMessage(windowId, {
                 action : 'readDom',
                 appName,
                 vnodeId: id,
@@ -676,50 +697,35 @@ class Gallery extends Component {
     }
 
     /**
+     * @summary Rebuilds every item vdom, then restores the state the rebuild destroys.
      *
-     */
-    onSort() {
-        if (this[itemsMounted] === true) {
-            let me        = this,
-                hasChange = false,
-                items     = [...me.store.items || []],
-                newCn     = [],
-                view      = me.getItemsRoot(),
-                vdomMap   = view.cn.map(e => e.id),
-                fromIndex, vdomId;
-
-            items.length = Math.min(me.maxItems, me.store.getCount());
-
-            if (items.length > 0) {
-                items.forEach((item, index) => {
-                    vdomId    = me.getItemVnodeId(item[me.keyProperty]);
-                    fromIndex = vdomMap.indexOf(vdomId);
-
-                    newCn.push(view.cn[fromIndex]);
-
-                    if (index !== fromIndex) {
-                        hasChange = true
-                    }
-                });
-
-                if (hasChange) {
-                    view.cn = newCn;
-                    me.update();
-
-                    me.timeout(50).then(() => {
-                        me.afterSetOrderByRow(me.orderByRow, !me.orderByRow)
-                    })
-                }
-            }
-        }
-    }
-
-    /**
+     * `data.Store` re-fires a sort as a `load` ({@link Neo.data.Store#onCollectionSort}), so this is the
+     * sort path too. It replaces every child of the items root with fresh {@link Neo.component.Gallery#createItem}
+     * output built from `itemTpl`, which carries no selection state — while `selection.Model` tracks *ids* and
+     * annotates the vdom *nodes* it resolves. The rebuilt nodes are new objects, so `neo-selected` and
+     * `aria-selected` go with the old ones while `hasSelection()` still reports a selection, and the camera is
+     * left pointing at the selected item's pre-sort cell.
+     *
+     * The repair is bound here, to the rebuild, rather than to a sort handler: every full rebuild destroys the
+     * annotation, not only a sort-driven one.
+     *
+     * Reordering is NOT done here in the sense Helix means it — the rebuild emits items in the new store order
+     * and the differ owns the DOM moves, exactly once. `onSort` used to run a second pass afterwards; it could
+     * never observe stale order, so it was removed rather than fixed.
+     *
      * @param {Object[]} items
      */
     onStoreLoad(items) {
-        this.getItemsRoot().cn = []; // silent update
-        this.createItems()
+        let me = this,
+            sm = me.selectionModel;
+
+        me.getItemsRoot().cn = []; // silent update
+        me.createItems();
+
+        if (sm?.hasSelection()) {
+            sm.restoreSelection(true);
+            me.onSelectionChange(sm.items)
+        }
     }
 
     /**

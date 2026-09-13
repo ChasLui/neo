@@ -117,6 +117,24 @@ class List extends Component {
          */
         keys: {},
         /**
+         * Class names that mark a rendered item as non-interactive: excluded from the click delegate
+         * and from arrow-key navigation alike.
+         *
+         * The rule needs a single source because it is consumed twice, in two different languages —
+         * as a CSS `:not()` selector handed to `Neo.main.addon.Navigator` (see `afterSetMounted`), and
+         * as a class check inside `Neo.selection.ListModel`'s click delegate, which cannot parse a
+         * selector. Both were hardcoded literals until a third concept needed adding and revealed that
+         * editing one and missing the other yields a row that is unclickable but still arrow-navigable.
+         *
+         * **Read at construct time.** The navigator selector is built once, behind `hasNavigator`, and
+         * frozen at subscribe time — so a later change would leave the subscribed selector disagreeing
+         * with the per-event delegate, which is the same drift in a harder-to-see form. Extend it as a
+         * class config on a subclass, not per instance after mount. An instance may still override the
+         * navigator's `selector` outright via the `navigator` config; that escape hatch is preserved.
+         * @member {String[]} nonInteractiveItemCls=['neo-disabled','neo-list-header']
+         */
+        nonInteractiveItemCls: ['neo-disabled', 'neo-list-header'],
+        /**
          * config values for Neo.list.plugin.Animate
          * @member {Object} pluginAnimateConfig=null
          */
@@ -154,6 +172,10 @@ class List extends Component {
          * @reactive
          */
         useCheckBoxes_: false,
+        /**
+         * @member {Boolean} useInternalId=true
+         */
+        useInternalId: true,
         /**
          * Setting this config to true will switch to dl, dt & dd tags instead of using ul & li.
          * Use the {Boolean} model field isHeader.
@@ -306,15 +328,14 @@ class List extends Component {
         if (value) {
             // Set up item navigation in the list
             if (!me.hasNavigator) {
-                me.navigator = {
+                me.navigator = Neo.merge({
                     appName       : me.appName,
                     autoClick     : me.selectOnFocus,
                     id            : me.id,
                     keepFocusIndex: me.keepFocusIndex,
-                    selector      : `.${me.itemCls}:not(.neo-disabled,.neo-list-header)`,
-                    windowId      : me.windowId,
-                    ...me.navigator
-                };
+                    selector      : me.getNavigableItemSelector(),
+                    windowId      : me.windowId
+                }, me.navigator);
 
                 me.hasNavigator = true
             }
@@ -422,8 +443,8 @@ class List extends Component {
 
     /**
      * Triggered after the windowId config got changed
-     * @param {Number} value
-     * @param {Number} oldValue
+     * @param {String} value
+     * @param {String} oldValue
      * @protected
      */
     afterSetWindowId(value, oldValue) {
@@ -431,7 +452,7 @@ class List extends Component {
 
         let {navigator} = this;
 
-        if (navigator) {
+        if (value && navigator) {
             navigator.windowId = value
         }
     }
@@ -463,17 +484,20 @@ class List extends Component {
     /**
      * Override this method for custom list items
      * @param {Object} record
-     * @param {Number} index
+     * @param {Number} index Logical index in the bound store.
+     * @param {Number} [poolIndex=index] Physical render-slot index. Ordinary lists keep this equal
+     * to `index`; buffered list subclasses pass a bounded slot so component instances can recycle
+     * without confusing their physical identity with the record's logical position.
      * @returns {Object} The list item vdom object
      */
-    createItem(record, index) {
+    createItem(record, index, poolIndex=index) {
         let me               = this,
             cls              = [me.itemCls],
             hasItemHeight    = me.itemHeight !== null,
             hasItemWidth     = me.itemWidth !== null,
             isHeader         = me.useHeaders && record.isHeader,
-            itemContent      = me.createItemContent(record, index),
-            itemId           = me.getItemId(record[me.getKeyProperty()]),
+            itemContent      = me.createItemContent(record, index, poolIndex),
+            itemId           = me.getItemId(me.getRecordId(record)),
             {selectionModel} = me,
             isSelected       = !me.disableSelection && selectionModel?.isSelected(itemId),
             item, removeDom;
@@ -493,9 +517,9 @@ class List extends Component {
         }
 
         item = {
-            id  : itemId,
-            tag : isHeader ? 'dt' : me.itemTagName,
-            'aria-selected' : isSelected,
+            id             : itemId,
+            tag            : isHeader ? 'dt' : me.itemTagName,
+            'aria-selected': isSelected,
             cls
         };
 
@@ -570,10 +594,11 @@ class List extends Component {
     /**
      * Override this method for custom renderers
      * @param {Object} record
-     * @param {Number} index
+     * @param {Number} index Logical index in the bound store.
+     * @param {Number} [poolIndex=index] Physical render-slot index for buffered subclasses.
      * @returns {Object|Object[]|String} Either a config object to assign to the item, a vdom cn array or a html string
      */
-    createItemContent(record, index) {
+    createItemContent(record, index, poolIndex=index) {
         let me       = this,
             itemText = record[me.displayField],
             filter;
@@ -638,7 +663,19 @@ class List extends Component {
      * @param {String} [id=this.id]
      */
     focus(id=this.id) {
-        this.mounted && Neo.main.addon.Navigator.navigateTo([id, this.navigator])
+        this.mounted && Neo.main.addon.Navigator.navigateTo({
+            data    : this.navigator,
+            target  : id,
+            windowId: this.windowId
+        })
+    }
+
+    /**
+     * @param {Object} record
+     * @returns {String|Number}
+     */
+    getRecordId(record) {
+        return this.useInternalId ? this.store.getInternalId(record) : this.store.getKey(record)
     }
 
     /**
@@ -690,7 +727,33 @@ class List extends Component {
      * @returns {String}
      */
     getItemId(recordOrId) {
-        return `${this.id}__${recordOrId.isRecord ? recordOrId[this.getKeyProperty()] : recordOrId}`
+        let id = recordOrId;
+
+        if (recordOrId.isRecord) {
+            id = this.getRecordId(recordOrId)
+        }
+
+        return `${this.id}__${id}`
+    }
+
+    /**
+     * Builds the CSS selector matching every item a pointer or an arrow key may land on.
+     *
+     * The single source for the rule `Neo.selection.ListModel` re-evaluates per click event. Both
+     * derive from `nonInteractiveItemCls`, so a subclass adding a non-interactive concept — a menu
+     * separator, say — is excluded from clicking and navigation by one declaration instead of two
+     * hand-kept copies.
+     * @returns {String}
+     */
+    getNavigableItemSelector() {
+        let me        = this,
+            {itemCls} = me,
+            excluded  = me.nonInteractiveItemCls;
+
+        // An empty list must degrade to "every item is navigable", not to `:not(.)` — that is invalid
+        // CSS and throws inside the addon's querySelectorAll, taking navigation down entirely rather
+        // than widening it.
+        return excluded?.length > 0 ? `.${itemCls}:not(.${excluded.join(',.')})` : `.${itemCls}`
     }
 
     /**
@@ -698,13 +761,10 @@ class List extends Component {
      * @returns {String|Number} itemId
      */
     getItemRecordId(vnodeId) {
-        let itemId   = vnodeId.split('__')[1],
-            {model}  = this.store,
-            keyField = model?.getField(this.getKeyProperty()),
-            keyType  = keyField?.type?.toLowerCase();
+        let itemId = vnodeId.split('__')[1];
 
-        if (keyType === 'int' || keyType === 'integer') {
-            itemId = parseInt(itemId)
+        if (!this.useInternalId) {
+            itemId = this.store.getCanonicalKey(itemId)
         }
 
         return itemId
@@ -863,9 +923,17 @@ class List extends Component {
 
         if (me.mounted) {
             if (Neo.isNumber(value)) {
-                navigateTo([me.getHeaderlessIndex(value), me.navigator])
+                navigateTo({
+                    data    : me.navigator,
+                    target  : me.getHeaderlessIndex(value),
+                    windowId: me.windowId
+                })
             } else if (value) {
-                navigateTo([me.getItemId(value[me.getKeyProperty()]), me.navigator])
+                navigateTo({
+                    data    : me.navigator,
+                    target  : me.getItemId(me.getRecordId(value)),
+                    windowId: me.windowId
+                })
             }
         } else {
             me.on('mounted', () => {

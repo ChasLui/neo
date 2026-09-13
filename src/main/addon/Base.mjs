@@ -30,7 +30,21 @@ class Base extends CoreBase {
          * @member {Boolean|Number} preloadFilesDelay=5000
          * @protected
          */
-        preloadFilesDelay: 5000
+        preloadFilesDelay: 5000,
+        /**
+         * Remote method access for other workers
+         * @member {Object} remote
+         * @protected
+         */
+        remote: {
+            app: [
+                'loadFiles'
+            ]
+        },
+        /**
+         * @member {Boolean} useLazyLoading=false
+         */
+        useLazyLoading: false
     }
 
     /**
@@ -72,7 +86,11 @@ class Base extends CoreBase {
             me.#loadFilesPromiseResolver = resolve
         });
 
-        if (me.preloadFilesDelay === false) {
+        if (me.useLazyLoading) {
+            // Do nothing. The promise remains pending, blocking initAsync (keeping isReady: false).
+            // Main thread is not blocked because it only waits for remotesReady().
+            // The first remote call will trigger interception -> cacheMethodCall -> executeLoadFiles.
+        } else if (me.preloadFilesDelay === false) {
             // No automated preload: resolve #loadFilesPromise immediately as it won't be triggered by delay.
             // It will only be triggered by cacheMethodCall or initAsync if needed.
             me.#loadFilesPromiseResolver();
@@ -141,7 +159,9 @@ class Base extends CoreBase {
      * @param {Boolean} oldValue
      * @protected
      */
-    afterSetIsReady(value, oldValue) { // Keep this synchronous
+    afterSetIsReady(value, oldValue) {
+        super.afterSetIsReady(value, oldValue);
+
         if (value) {
             // Initiate the asynchronous processing of cached method calls.
             // This method itself does not need to be awaited here.

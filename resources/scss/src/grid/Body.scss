@@ -1,19 +1,7 @@
-.neo-grid-body-wrapper {
-    height         : 100%;
-    overflow-anchor: none;
-    overflow-x     : hidden;
-    overflow-y     : auto;
-    position       : relative;
-    scrollbar-width: none;
-
-    &:focus {
-        outline: none;
-    }
-}
-
 .neo-grid-body {
     height    : 100%;
     overflow-x: visible;
+    position  : relative;
 
     .neo-grid-cell {
         &.neo-is-modified {
@@ -31,8 +19,16 @@
         }
     }
 
+    &.neo-mouse-drag-scroll {
+        user-select: none;
+    }
+
     &.neo-is-scrolling * {
         pointer-events: none !important;
+    }
+
+    .neo-grid-body-content {
+        position: relative;
     }
 
     .neo-center {
@@ -44,14 +40,10 @@
     }
 
     .neo-grid-row {
-        position: absolute;
-        width   : 100%;
-
-        &:last-child {
-            .neo-grid-cell {
-                border-bottom-width: 0 !important;
-            }
-        }
+        contain    : strict;
+        position   : absolute;
+        width      : 100%;
+        will-change: transform;
 
         &.neo-even {
             .neo-grid-cell {
@@ -59,27 +51,37 @@
             }
         }
 
-         // selection.RowModel
-         &.neo-selected {
-             .neo-grid-cell {
-                 background-color: var(--grid-rowmodel-selected-cell-background-color);
-                 color           : var(--grid-rowmodel-selected-cell-color);
-             }
-         }
-
          .neo-grid-cell {
              align-items     : center;
              background-color: var(--grid-container-cell-background-color);
              border-bottom   : 1px solid var(--grid-container-border-color);
              border-right    : 1px solid var(--grid-container-border-color);
+             contain         : layout paint style;
              display         : flex;
              height          : inherit;
              padding         : 2px 10px 2px;
              position        : absolute;
              width           : fit-content;
 
-             &:last-child {
+             &.neo-last-column {
                  border-right-width : 0;
+             }
+
+             &.neo-locked-end-first-column {
+                 border-left: 1px solid var(--grid-container-border-color);
+             }
+
+             &.neo-value-band-1 {
+                 background-color: var(--grid-cell-value-band-1-background-color, transparent);
+             }
+
+             &.neo-value-band-2 {
+                 background-color: var(--grid-cell-value-band-2-background-color, transparent);
+             }
+
+             &.neo-locked-start,
+             &.neo-locked-end {
+                 z-index: 5;
              }
 
              // selection.CellModel
@@ -93,13 +95,26 @@
                  color           : var(--grid-cellmodel-selected-column-cell-color);
              }
          }
+
+         .neo-grid-cell:not(.neo-locked-start):not(.neo-locked-end) {
+             transform: translateX(calc(var(--grid-scroll-left, 0px) * -1));
+         }
+
+         // selection.RowModel
+         &.neo-selected {
+             .neo-grid-cell {
+                 background-color: var(--grid-rowmodel-selected-cell-background-color);
+                 color           : var(--grid-rowmodel-selected-cell-color);
+             }
+         }
      }
 }
 
 .neo-mouse {
     .neo-grid-row {
         &:not(.neo-selected) {
-            &:hover {
+            &:hover,
+            &.neo-hover {
                 .neo-grid-cell {
                     background-color: var(--grid-cell-background-color-hover);
                 }

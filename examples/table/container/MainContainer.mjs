@@ -48,41 +48,41 @@ class MainContainer extends ConfigurationViewport {
             value    : me.exampleComponent.height
         }, {
             ...selectionModelRadioDefaults,
-            checked       : selectionModel.ntype === 'selection-table-cellmodel',
-            labelText     : 'selectionModel',
-            listeners     : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellModel)},
-            style         : {marginTop: '10px'},
-            valueLabelText: 'Cell'
+            checked   : selectionModel.ntype === 'selection-table-cellmodel',
+            labelText : 'selectionModel',
+            listeners : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellModel)},
+            style     : {marginTop: '10px'},
+            valueLabel: 'Cell'
         }, {
             ...selectionModelRadioDefaults,
-            checked       : selectionModel.ntype === 'selection-table-columnmodel',
-            listeners     : {change: me.onRadioViewChange.bind(me, 'selectionModel', ColumnModel)},
-            valueLabelText: 'Column'
+            checked   : selectionModel.ntype === 'selection-table-columnmodel',
+            listeners : {change: me.onRadioViewChange.bind(me, 'selectionModel', ColumnModel)},
+            valueLabel: 'Column'
         }, {
             ...selectionModelRadioDefaults,
-            checked       : selectionModel.ntype === 'selection-table-rowmodel',
-            listeners     : {change: me.onRadioViewChange.bind(me, 'selectionModel', RowModel)},
-            valueLabelText: 'Row'
+            checked   : selectionModel.ntype === 'selection-table-rowmodel',
+            listeners : {change: me.onRadioViewChange.bind(me, 'selectionModel', RowModel)},
+            valueLabel: 'Row'
         }, {
             ...selectionModelRadioDefaults,
-            checked       : selectionModel.ntype === 'selection-table-cellcolumnmodel',
-            listeners     : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellColumnModel)},
-            valueLabelText: 'Cell & Column'
+            checked   : selectionModel.ntype === 'selection-table-cellcolumnmodel',
+            listeners : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellColumnModel)},
+            valueLabel: 'Cell & Column'
         }, {
             ...selectionModelRadioDefaults,
-            checked       : selectionModel.ntype === 'selection-table-cellrowmodel',
-            listeners     : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellRowModel)},
-            valueLabelText: 'Cell & Row'
+            checked   : selectionModel.ntype === 'selection-table-cellrowmodel',
+            listeners : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellRowModel)},
+            valueLabel: 'Cell & Row'
         }, {
             ...selectionModelRadioDefaults,
-            checked       : selectionModel.ntype === 'selection-table-cellcolumnrowmodel',
-            listeners     : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellColumnRowModel)},
-            valueLabelText: 'Cell & Column & Row'
+            checked   : selectionModel.ntype === 'selection-table-cellcolumnrowmodel',
+            listeners : {change: me.onRadioViewChange.bind(me, 'selectionModel', CellColumnRowModel)},
+            valueLabel: 'Cell & Column & Row'
         }, {
             module   : Checkbox,
-            checked  : me.exampleComponent.sortable,
-            labelText: 'sortable',
-            listeners: {change: me.onConfigChange.bind(me, 'sortable')},
+            checked  : me.exampleComponent.dragResortable,
+            labelText: 'dragResortable',
+            listeners: {change: me.onConfigChange.bind(me, 'dragResortable')},
             style    : {marginTop: '10px'}
         }, {
             module   : Checkbox,

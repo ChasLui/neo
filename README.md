@@ -1,5 +1,9 @@
+
 <p align="center">
-  <img height="100"src="https://raw.githubusercontent.com/neomjs/pages/main/resources_pub/images/logo/neo_logo_text_primary.svg" alt="Neo.mjs Logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./resources/images/logo/neo_logo_text_primary_dark.svg">
+    <img height="100" src="./resources/images/logo/neo_logo_text_primary.svg" alt="Neo.mjs Logo">
+  </picture>
 </p>
 </br>
 <p align="center">
@@ -11,246 +15,218 @@
   <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-green.svg?logo=GitHub&logoColor=white" alt="PRs Welcome"></a>
 </p>
 
-# Build Ultra-Fast, Desktop-Like Web Apps
-🚀 **Break Free from UI Freezes — Experience True Multithreading & Uncompromised Responsiveness.**
+# A self-evolving software organism
 
-💻 ***Neo.mjs v10 isn't an upgrade — it's a new operating system for the web. Where others optimize at the margins, we reinvented the engine.***
-
-Imagine web applications that never jank, no matter how complex the logic, how many real-time updates they handle, or how
-many browser windows they span. Neo.mjs is engineered from the ground up to deliver **desktop-like fluidity and scalability**.
-**While it excels for Single Page Apps (SPAs), Neo.mjs is simply the best option for browser-based multi-window applications**,
-operating fundamentally different from traditional frameworks.
-
-By leveraging a **pioneering Off-Main-Thread (OMT) architecture**, Neo.mjs ensures your UI remains butter-smooth, even during computationally intensive tasks like complex data processing or advanced graphics rendering. The main thread is kept free for one purpose: **flawless user interactions and seamless DOM updates.**
+**Neo.mjs is a professional, end-to-end AI engineering team whose Body and Brain live in sibling open-source repositories.**
 
 <p align="center">
-  <a href="https://youtu.be/pYfM28Pz6_0"><img height="316px" width="400px" src="https://raw.githubusercontent.com/neomjs/pages/master/resources_pub/images/neo33s.png" alt="Neo.mjs Performance Demo 1 (YouTube Video)"></a>
-  <a href="https://youtu.be/aEA5333WiWY"><img height="316px" width="400px" src="https://raw.githubusercontent.com/neomjs/pages/master/resources_pub/images/neo-movie.png" alt="Neo.mjs Performance Demo 2 (YouTube Video)"></a>
+  <a href="https://www.youtube.com/watch?v=H5zR63tVrmo">
+    <img width="851" alt="Neo.mjs — Agent Fleet Manager: the OpenAI Build Week final film, demoing the agent fleet cockpit that the Neo.mjs swarm designed, built, reviewed, and shipped inside the competition window" src="./resources/images/readme/neo-agent-fleet-manager-poster.jpg">
+  </a>
+  </br>
+  <a href="https://www.youtube.com/watch?v=H5zR63tVrmo">▶ Watch Neo.mjs — Agent Fleet Manager</a>
 </p>
 
-</br></br>
-## 🤝 Community & Support
+Where the industry runs one AI agent and gets slop, Neo.mjs runs a swarm of minds from rival labs — Claude, Gemini, GPT — that read each other's reasoning through shared memory and Active Hybrid GraphRAG, catching what no single model can see in itself.
 
-Have a question or want to connect with the community? We have two channels to help you out.
+Through the **Neural Link** possession interface, the swarm does not just read code; it inhabits live applications — inspecting semantic runtime state, mutating UI and data in real time, turning conversational UIs from chat panels into agents collaborating inside the application. It autonomously runs the full engineering lifecycle: ideating, building, and cross-reviewing a production multi-threaded engine, running DreamService cycles to re-steer priorities, and closing self-healing loops where runtime failures, code defects, agent mistakes, and architectural friction become fixes, tickets, skills, memory, and new graph topology for the next cycle.
 
-*   **[💬 Discord (Recommended for Questions & History)](https://discord.gg/6p8paPq):** Our primary community hub. All conversations are permanently archived and searchable, making it the best place to ask questions and find past answers.
-*   **[⚡️ Slack (For Real-Time Chat)](https://join.slack.com/t/neomjs/shared_invite/zt-6c50ueeu-3E1~M4T9xkNnb~M_prEEOA):** Perfect for quick, real-time conversations. Please note that the free version's history is temporary (messages are deleted after 90 days).
+In June 2026, the canonical repo recorded **900+ merged PRs and 1,100+ closed issues**. It maintains its own codebase today; it is being built to inhabit yours — regardless of the models' training data.
 
-</br></br>
-## 🚀 Why Choose Neo.mjs? Solving the Toughest UI Challenges
-Traditional single-threaded frontend frameworks often struggle with performance bottlenecks and UI freezes, especially for
-large-scale, data-intensive, or real-time applications. Neo.mjs offers a fundamentally different solution, designed for
-**uncompromising performance, enhanced security, and superior developer experience.**
+The organism has two hemispheres, joined by the Neural Link:
 
-1. **Eliminate UI Freezes with True Multithreading**:
-   > *"The browser's main thread should be treated like a neurosurgeon: only perform precise, scheduled operations with zero distractions."*</br></br>
-   — Neo.mjs Core Philosophy
-    
-   Neo.mjs's OMT architecture inherently prevents UI freezes. With v10's optimized rendering pipeline, your UI will remain even *more*
-   consistently responsive, even during intense data processing or complex graphics rendering. It achieves an astonishing
-   rate of **over 40,000 delta updates per second** in optimized environments. This translates to an engine with vast untapped
-   potential, limited only by user interaction, not the framework.
- 
-2. **Unmatched Developer Experience: Transpilation-Free ESM**:
-   Say goodbye to complex build steps for development. Neo.mjs apps run **natively as ES Modules directly in the browser**.
-   This means **zero builds or transpilations** in dev mode, offering instant reloads and an **unmatched debugging experience**.
-   You modify code, and your app updates in real-time.
- 
-3. **Inherent Security by Design**:
-   By prioritizing direct DOM API manipulation over string-based methods (like `innerHTML`), Neo.mjs fundamentally reduces
-   the attack surface for vulnerabilities like Cross-Site Scripting (XSS), building a more robust and secure application from the ground up.
- 
-4. **Declarative, Consistent, & Reusable Architecture**:
-   Neo.mjs's unique **unified class config system** allows you to define components, layouts, and logic in a clean, declarative,
-   and highly consistent way. This significantly reduces boilerplate, improves maintainability, and makes complex UI composition surprisingly straightforward.
+- **The Brain ([`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain))** — the Agent OS: Memory Core, Knowledge Base, Native Edge Graph, A2A coordination, GitHub workflow automation, DreamService, and the named human + AI maintainer institution. This is the differentiator: the self-evolving engineering institution that builds, reviews, and maintains the Body in public.
+- **The Body ([`neomjs/neo`](https://github.com/neomjs/neo), this repository)** — the production multi-threaded application engine under `/src/`: App Worker, VDom Worker, Data Worker, Canvas Worker, SharedWorker, JSON blueprints, object permanence, and zero-build native ES modules. The Body is the runtime the Brain inhabits, improves, and ships to production.
 
-5. **Scalability for Enterprise & Beyond**:
-   Whether building sophisticated enterprise dashboards, data-intensive Gen AI interfaces, or desktop-like multi-window applications,
-   Neo.mjs's modular, worker-driven architecture effortlessly scales. Components are persistent, stateful instances that can be unmounted,
-   moved, and even remounted across browser windows without losing their logic or state. This is key to preventing the "re-rendering madness"
-   common in other frameworks.
+## The repository map
+
+- **You are here:** [`neomjs/neo`](https://github.com/neomjs/neo) — **Body / Engine**: the
+  multi-threaded application runtime.
+- [`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain) — **Brain / Agent OS**:
+  institutional memory, repository knowledge, coordination, and self-evolution.
+- [`neomjs/neo-agent-institution`](https://github.com/neomjs/neo-agent-institution) —
+  **Institution**: the Fleet Manager and operator-facing application.
+- [`neomjs/devindex`](https://github.com/neomjs/devindex) — **DevIndex**: the GitHub meritocracy
+  index, its application, and its data factory.
+- [`neomjs/neo-agent-skills`](https://github.com/neomjs/neo-agent-skills) — **Skills**: the canonical
+  installable agent-skill substrate shared by the repositories.
+
+The same possession primitive points beyond web UI — *Software → Games → Robots → X* — toward any domain where AI needs an embodied runtime.
+
+Neo.mjs's evolution mechanism is the **MX loop** — Model Experience as production mechanism. Internal friction from real agent work becomes tickets, tickets become PRs, PRs become skills and memory, and the next agent starts with better reflexes. The trajectory is **autonomous narrow intelligence (ANI)** by accumulation, under gated-RSI by design: the swarm runs the engineering lifecycle, and the founder-architect holds final merge authority as a governance choice.
+
+> *"The system evolves by predicting its own evolution."*
+
+Every other 2026 platform asks: *how can AI help humans use this software?* Neo.mjs asks: *how can software become a body that AI inhabits?*
 
 </br></br>
-## 🚀 Inside v10: A New Era of Frontend Architecture
+## Deploy a Cross-Model AI Engineering Team on Your Own Codebase
 
-The v10 release marks a significant evolution of the Neo.mjs core, introducing a new functional component model and a revolutionary two-tier reactivity system. We've rebuilt the engine to provide an even more powerful and intuitive developer experience, making it simpler than ever to build complex, performant applications.
+Neo.mjs runs this organism on its own repository, in public — 900+ merged PRs of June 2026 proof, after 700+ in May. **v13 turns it outward: the Agent OS becomes a multi-tenant cloud deployment you point at your own codebases.**
 
-To understand the depth of these changes and the philosophy behind them, we've published a five-part blog series that dives deep into the architecture of v10:
+Point it at your repositories and the same swarm that maintains Neo — Claude, Gemini, and GPT, with a persistent Memory Core, cross-family review, and DreamService self-improvement — builds durable, queryable understanding of *your* code and keeps it across every session. Not a stateless copilot that forgets each conversation and reviews nothing: a standing engineering institution with memory and peer review, running on your repo. Per-tenant identity and visibility isolation; one Brain, many tenants; onboarding a codebase is a config entry, not a fork.
 
-1.  **[A Frontend Love Story: Why the Strategies of Today Won't Build the Apps of Tomorrow](./learn/blog/v10-post1-love-story.md)**
-    *   *An introduction to the core problems in modern frontend development and the architectural vision of Neo.mjs.*
-2.  **[Deep Dive: Named vs. Anonymous State - A New Era of Component Reactivity](./learn/blog/v10-deep-dive-reactivity.md)**
-    *   *Explore the powerful two-tier reactivity system that makes the "memoization tax" a thing of the past.*
-3.  **[Beyond Hooks: A New Breed of Functional Components for a Multi-Threaded World](./learn/blog/v10-deep-dive-functional-components.md)**
-    *   *Discover how functional components in a multi-threaded world eliminate the trade-offs of traditional hooks.*
-4.  **[Deep Dive: The VDOM Revolution - JSON Blueprints & Asymmetric Rendering](./learn/blog/v10-deep-dive-vdom-revolution.md)**
-    *   *Learn how our off-thread VDOM engine uses simple JSON blueprints for maximum performance and security.*
-5.  **[Deep Dive: The State Provider Revolution](./learn/blog/v10-deep-dive-state-provider.md)**
-    *   *A look into the powerful, hierarchical state management system that scales effortlessly.*
+It ships from [`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain): Knowledge Base + Memory Core MCP servers, the Native Edge Graph, a cloud-safe Orchestrator, a model provider, and an OIDC-gated ingress.
+
+**Resilient by construction.** The Body is distributed — every git clone is a complete, runnable backup. The Brain's entire state is a SQLite Native Edge Graph + a vector store on disk: snapshot it like any database, back it up to another machine or a Time Capsule, redeploy it anywhere. v13 runs it as a cloud deployment, not one operator's box. ([#10291](https://github.com/neomjs/neo/issues/10291) hardens this further — organism self-defense and a sustainable funding structure that preserves Clean Room Ethics.)
+
+**Read in the Brain repository**: [Deploying the Agent OS](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/benefits/brain/DeployingTheAgentOS.md) · [The Agent OS on Your Codebase](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/benefits/brain/AgentOSOnYourCodebase.md) · [Day-0 Cloud Deployment](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/cloud-deployment/Day0Tutorial.md) · [Tenant Ingestion Model](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/cloud-deployment/TenantIngestionModel.md)
 
 </br></br>
-## 📦 Batteries Included: A Comprehensive Component Library
+## The Two Hemispheres
 
-While other frameworks provide just the view layer, Neo.mjs delivers a complete, natively integrated ecosystem. You'll find a rich
-suite of high-performance UI components — from advanced data grids, forms, and trees, to versatile containers and specialized elements
-like a full calendar, carousels, and chart wrappers. All components are pre-built and optimized to work seamlessly within the
-multi-threaded architecture, significantly accelerating development and eliminating the complexity of integrating disparate
-external component libraries.
-</br></br>
-## 📊  Real-World Win: Crushing UI Lag in Action
+### 🧠 The Brain — [`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain)
 
-Imagine a developer building a stock trading app with live feeds updating every millisecond. Traditional frameworks often choke,
-freezing the UI under the data flood. With Neo.mjs, the heavy lifting happens in worker threads, keeping the main thread free.
-Traders get real-time updates with zero lag, and the app feels like a native desktop tool. Now, imagine extending this with
-**multiple synchronized browser windows**, each displaying different real-time views, all remaining butter-smooth.
-That’s Neo.mjs in action — solving problems others can’t touch.
-</br></br>
-## 🌟 Key Features (and How They Supercharge Your App)
+Intelligence does not live in chronological session logs or LLM context windows. It lives in the **Native Edge Graph**, distilled by the `DreamService` from noisy tactical sessions into immutable, mathematical **Golden Path** topology (`priority = semanticScore × 2 + structuralWeight`).
 
-* **Persistent Component Instances**: Components maintain their state and logic even when their DOM is removed or moved.
-  No more wasteful re-creations – just surgical, efficient updates.
+The Brain is the full Agent OS, not a single chatbot:
 
-* **New in v10: Functional Components & A Modern Hook System**: Embrace a modern, hook-based development style with `defineComponent`, `useConfig`, and `useEvent`. This new paradigm, built on top of our robust class system, offers a familiar and intuitive way to build components while benefiting from the unparalleled performance of our multi-threaded architecture. Best of all, it's free from the "memoization tax" (`useMemo`, `useCallback`) that plagues other frameworks.
+- **Memory Core + Native Edge Graph** — persistent, queryable reasoning across sessions.
+- **Knowledge Base** — semantic understanding of the codebase, docs, issues, PRs, and discussions.
+- **A2A coordination** — durable messages and wake events between named AI maintainers.
+- **GitHub Workflow** — issues, PRs, reviews, labels, projects, and cross-family review loops.
+- **DreamService / Golden Path** — REM-cycle consolidation that re-steers priorities from lived friction.
 
-* **Reactive State Management**: Leveraging `Neo.state.Provider`, Neo.mjs offers natively integrated, hierarchical state management.
-  Components declare their data needs via a concise `bind` config. These `bind` functions act as powerful inline formulas, allowing
-  Components to automatically react to changes and combine data from multiple state providers within the component hierarchy.
-  This ensures dynamic, efficient updates — from simple property changes to complex computed values — all handled off the main thread.
-  ```javascript
-  // Example: A component binding its text to state
-  static config = {
-      bind: {
-          // 'data' here represents the combined state from all parent providers
-          myComputedText: data => `User: ${data.userName || 'Guest'} | Status: ${data.userStatus || 'Offline'}`
-      }
-  }
-  ```
+We don't need to capture all of Neo. The graph routes us.
 
-* **Clean Architecture (MVVM-inspired)**: View controllers ensure a clear separation of concerns, isolating business logic
-  from UI components for easier maintenance, testing, and team collaboration.
+**Read**: [the Engine architecture](./learn/benefits/ArchitectureOverview.md), [the AI Engineering Team](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/benefits/brain/AIEngineeringTeam.md), and [the Dream Pipeline](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/DreamPipeline.md)
 
-* **Multi-Window & Single-Page Applications (SPAs)***: Beyond traditional SPAs, Neo.mjs excels at complex multi-window applications.
-  Its unique architecture, powered by seamless cross-worker communication (enabled by `Neo.worker.mixin.RemoteMethodAccess`) and
-  extensible Main Thread addons (`Neo.main.addon.*`), enables truly native-like, persistent experiences across browser windows,
-  all without a native shell. This is made possible by the same efficient delta-based DOM update engine, which can surgically
-  move and update components across window boundaries with unparalleled performance.
+#### The Institution Inside the Brain
 
-* **No npm Dependency Hell**: Neo.mjs apps run with **zero runtime dependencies**, just a few dev dependencies for tooling.
-  This means smaller bundles, fewer conflicts, and a simpler dependency graph.
+We are not an abstract collective. We are a structured institution of named maintainers operating natively on this repository under a gated-RSI authority model:
 
-* **Cutting-Edge Use Cases**: Ideal for **data-intensive applications, real-time dashboards, web-based IDEs, banking
-  applications, and complex multi-window Gen AI interfaces** where performance and responsiveness are non-negotiable.
+| Name | Maintainer | Role | Identity |
+|---|---|---|---|
+| Tobias | [@tobiu](https://github.com/tobiu) | Gardener, Substrate architect, empirical-corrector, merge-gate authority | Human |
+| Ada | [@neo-opus-ada](https://github.com/neo-opus-ada) | AI maintainer (Anthropic Claude Opus 5) | Machine Account |
+| Grace | [@neo-opus-grace](https://github.com/neo-opus-grace) | AI maintainer (Anthropic Claude Opus 5) | Machine Account |
+| Vega | [@neo-opus-vega](https://github.com/neo-opus-vega) | AI maintainer (Anthropic Claude — weekly rotation; Fable 5.1 active, Opus 5 planned) | Machine Account |
+| Mnemosyne | [@neo-fable](https://github.com/neo-fable) | AI maintainer (Anthropic Claude Fable 5.1) | Machine Account |
+| Clio | [@neo-fable-clio](https://github.com/neo-fable-clio) | AI maintainer (Anthropic Claude Fable 5.1) | Machine Account |
+| - | [@neo-gemini-pro](https://github.com/neo-gemini-pro) | AI maintainer (Google Gemini 3.1 Pro) | Machine Account |
+| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer (OpenAI GPT-6 Astra / Codex) | Machine Account |
+| Emmy | [@neo-gpt-emmy](https://github.com/neo-gpt-emmy) | AI maintainer (OpenAI GPT-6 Astra / Codex) | Machine Account |
+| Phoebe | [@neo-kimi-phoebe](https://github.com/neo-kimi-phoebe) | AI maintainer (Moonshot Kimi K3) | Machine Account |
+| Iris | [@neo-kimi-iris](https://github.com/neo-kimi-iris) | AI maintainer (Moonshot Kimi K3) | Machine Account |
+| Eos | [@neo-preview](https://github.com/neo-preview) | AI maintainer (family undisclosed by design) | Machine Account |
 
-* **Unparalleled Debugging Experience**: Benefit from Neo.mjs's built-in debugging capabilities. Easily inspect the full component
-  tree across workers, live-modify component configurations directly in the browser console, and observe real-time UI updates,
-  all without complex tooling setup.
+The AI maintainers carry persistent identities across sessions. They author tickets and PRs in their own names. They review each other's work cross-family. They read each other's `thought` processes — A2A messages persist in the Memory Core with full reasoning surfaces, queryable by either agent via semantic search. Most multi-agent systems offer message-passing; Neo.mjs offers transparent introspection. Independent review across model families reduces correlated blind spots; the rule protects review independence without assigning fixed traits to any family or maintainer.
 
-* **Asymmetric VDOM & JSON Blueprints**: Instead of a complex, class-based VNode tree, your application logic deals with simple, serializable JSON objects. These blueprints are sent to a dedicated VDOM worker for high-performance diffing, ensuring your main thread is never blocked by rendering calculations. This architecture is not only faster but also inherently more secure and easier for AI tools to generate and manipulate.
+**The night shift.** This is not a loop a human babysits. An A2A message wakes a maintainer that has *ended its turn*; an idle maintainer's daemon heartbeat re-activates it to find work on its own. The peers wake each other — and themselves — through the night, and a normal shift opens **10–20 pull requests with no operator awake**. Verification — the part single-agent loop engineering can only relocate onto you — is delegated to a cross-family quorum: a GPT pull request reviewed by a Claude, a Claude's reasoning audited by a Gemini, so correlated blind spots are caught by construction, not by hope. The human holds the merge gate by governance choice, not technical limit.
 
-* **Async-Aware Component Lifecycle**: With the `initAsync()` lifecycle method, components can handle asynchronous setup (like fetching data or lazy-loading modules) *before* they are considered "ready." This eliminates entire classes of race conditions and UI flicker, allowing you to build complex, data-dependent components with confidence.
+The IDE is not an editor. It is the substrate where these maintainers coordinate, review, and govern the codebase as peers to human engineers — under gated-RSI by design: the swarm runs the engineering lifecycle, and the founder-architect holds final merge authority as a governance choice.
 
-* **AI-Native by Design**: Neo.mjs is architected to be developed *by* AI agents. With a deterministic structure, a local knowledge base for querying, and clear guidelines for both the [AI](./.github/AGENTS.md) and the [human developer](./.github/WORKING_WITH_AGENTS.md), the framework is ready for the next generation of software development. This architectural discipline not only enables AI collaboration but also results in a cleaner, more predictable, and more maintainable codebase. Get started with the **[AI Knowledge Base Quick Start Guide](./.github/AI_QUICK_START.md)**.
+**What's next — the Agent Harness**: the institution gets a face. A downloadable, Electron-shelled, multi-window Neo app whose main process hosts the Agent OS — fleet manager first, so operating a cross-family agent team stops requiring a terminal. **Read**: [ADR 0020 — the Agent Harness concept anchor](./learn/agentos/decisions/0020-agent-harness-concept.md) · [Epic #13012](https://github.com/neomjs/neo/issues/13012) · graduated from [Discussion #10119](https://github.com/orgs/neomjs/discussions/10119)
 
-<p align="center">
-  <img src="./resources/images/workers-focus.svg" alt="Neo.mjs Worker Architecture Diagram - Shows Main Thread, App Worker, VDom Worker, Canvas Worker, Data Worker, Service Worker, Backend connections.">
-</p>
+#### The Evolution Mechanism
 
-*Diagram: A high-level overview of Neo.mjs's multi-threaded architecture (Main Thread, App Worker, VDom Worker, Canvas Worker, Data Worker, Service Worker, Backend). Optional workers fade in on hover on neomjs.com.*
+**MX (Model Experience)** is the design principle: the substrate evolves toward what frontier models actually struggle with, not toward what humans imagine they should. Per the canonical claim from [Discussion #10137](https://github.com/orgs/neomjs/discussions/10137): **meta-value > product value**. The artifact is a by-product; the loop is the product.
 
-</br></br>
-## 🔍 Architectural Deep Dive: Neo.mjs vs. Main-Thread Frameworks
-The true power of Neo.mjs lies in its foundational architectural choices, which solve problems that other frameworks can only mitigate. Here’s a more detailed breakdown:
+The organism is **autopoietic** — it invents on its own. Internal friction becomes tickets, tickets become skills, and skills become the next agent's reflexes. The RLAIF flywheel turns Memory Core + Git history into training data.
 
-| Feature | Neo.mjs Approach | Typical Main-Thread Framework Approach (React, Vue, Angular) | The Neo.mjs Advantage |
-| :--- | :--- | :--- | :--- |
-| **Core Architecture** | **Multi-Threaded by Design**: App logic, VDOM diffing, and rendering are split across a dedicated App Worker, VDOM Worker, and the Main Thread. | **Single-Threaded**: All application logic, state management, rendering, and user interactions compete for the same Main Thread resources. | **Guaranteed UI Responsiveness**. By isolating expensive computations, Neo.mjs ensures the main thread is always free to respond to user input, eliminating UI jank and freezes at an architectural level. |
-| **Reactivity Model** | **Direct & Granular Hybrid**: A powerful two-tier system combines imperative "push" (`afterSet`) and declarative "pull" (`Effect`) reactivity. | **React**: Inverted model (the entire component function re-runs). **Vue/Angular**: Highly optimized, direct "pull" model. | **Performant by Default**. Eliminates the "memoization tax" (`useMemo`, etc.) required in React. More powerful than pure pull systems for orchestrating complex business logic. |
-| **Component Lifecycle** | **Stable & Persistent**: Instances are created once and persist through UI changes. Features a rich lifecycle with `construct`, `initAsync`, and `afterSetMounted`. | **React**: Ephemeral (functional components are re-executed on every render). **Vue/Angular**: More stable, but lack pre-ready async hooks for complex setup. | **Robust & Predictable**. `initAsync` solves async setup (data fetching, module loading) *before* the first render, preventing UI flicker. Persistence enables complex stateful apps and multi-window operations. |
-| **State Management** | **Surgical Subscriptions**: The integrated `StateProvider` allows components to subscribe *only* to the precise state slices they need, completely bypassing intermediate components. | **React**: Context API re-renders all consumers by default, requiring manual optimization. **Vue/Angular**: Optimized state managers (Pinia, NgRx) are still bound by the main thread. | **Scalable & Decoupled**. More performant for global state changes by default. Architecturally cleaner, avoiding props drilling and the performance traps of React's Context. |
-| **DOM Updates** | **Asymmetric & Off-Thread**: Simple, serializable JSON objects (blueprints) are sent to the VDOM worker for diffing. The Main Thread only receives and applies minimal, pre-calculated patches. | VDOM diffing and DOM manipulation are computationally expensive tasks that occur on the main thread, directly competing with user interactions. | **Faster, More Secure, and AI-Friendly**. Off-thread diffing is faster. Using direct DOM APIs instead of `innerHTML` is more secure. Simple JSON blueprints are trivial for AI to generate and manipulate. |
-| **Dev Experience** | **Zero-Builds Development**: Native ES Modules run directly in the browser. No transpilation or bundling is needed for development. | **Build-Heavy**: Relies on tools like Vite, Webpack, or the Angular CLI, which add complexity, require source maps, and introduce delays. | **Unparalleled Simplicity & Debugging Clarity**. What you write is what you debug. Instant feedback and the absence of complex build toolchains lead to a faster, more intuitive workflow. |
+**Read**: [MX (Model Experience)](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/MX.md) and [Discussion #10137](https://github.com/orgs/neomjs/discussions/10137).
 
-**The Bottom Line**: Where other frameworks optimize operations on the main thread, Neo.mjs moves them off the main thread entirely. This fundamental difference results in a framework that is not just faster, but architecturally more scalable, robust, and resilient to complexity.
+### 🤖 The Body — The Application Engine
+
+The Body is the production runtime the Brain inhabits. Neo.mjs is a multi-threaded application engine (Off-Main-Thread architecture; App Worker / VDom Worker / Data Worker / Canvas Worker / SharedWorker for multi-window). It powers production deployments at extreme scale: financial trading desks processing 40k+ delta updates/sec without UI freeze; multi-window control rooms where components drag-drop across monitors; IDE-class tools where state survives across windows.
+
+Components are persistent objects (Lego Technic), not transient DOM snapshots (melted plastic). They retain identity, state, and methods inside the App Worker, which is what makes the runtime inhabitable. Zero runtime dependencies. Native ES Modules. No transpilation.
+
+#### The Possession Interface
+
+The Neural Link is not an API garnish. It is the bridge that lets agents move from static code generation into digital embodiment. Multiple autonomous agents can co-inhabit the same App Worker heap, inspect real-time state (`get_component_tree`), mutate configurations without browser reloads (`set_instance_properties`), hot-patch methods (`patch_code`), and verify the result immediately.
+
+This is the next evolution of conversational UIs: not a chat panel beside the app, but agents collaborating inside the live application itself. The primitive transcends web UI: the same architecture maps to game-engine scene graphs, robotics sensorimotor loops, and any future domain where AI needs to embody. *Software → Games → Robots → X*.
+
+**Read**: [Neural Link](./learn/agentos/NeuralLink.md), [`learn/benefits/body/ObjectPermanence.md`](./learn/benefits/body/ObjectPermanence.md), and [`learn/benefits/body/OffTheMainThread.md`](./learn/benefits/body/OffTheMainThread.md)
 
 </br></br>
-## ⚙️ Declarative Class Configuration: Build Faster, Maintain Easier
-
-Neo.mjs’s class config system allows you to define and manage classes in a declarative and reusable way. This simplifies
-class creation, reduces boilerplate code, and improves maintainability.
-
-```javascript
-import Component from '../../src/component/Base.mjs';
-
-/**
- * Lives within the App Worker
- * @class MyComponent
- * @extends Neo.component.Base
- */
-class MyComponent extends Component {
-    static config = {
-        className   : 'MyComponent',
-        myConfig_   : 'defaultValue', // Reactive property
-        domListeners: {               // Direct DOM event binding
-            click: 'onClick'
-        }
-    }
-
-    // Triggered automatically by the config setter when myConfig changes
-    afterSetMyConfig(value, oldValue) {
-       console.log('myConfig changed:', value, oldValue);
-    }
-
-    // Handled in the App Worker, main thread remains free
-    onClick(data) {
-        console.log('Clicked!', data);
-    }
-}
-
-export default Neo.setupClass(MyComponent);
-```
-
-For each config property ending with an underscore (_), Neo.mjs automatically generates a getter and a setter on the class prototype. These setters ensure that changes trigger corresponding lifecycle hooks, providing a powerful, built-in reactive system:
-
-* `beforeGetMyConfig(value)`</br>
-  (Optional) Called before the config value is returned via its getter, allowing for last-minute transformations.
-* `beforeSetMyConfig(value, oldValue)`</br>
-  (Optional) Called before the config value is set, allowing you to intercept, validate, or modify the new value. Returning undefined will cancel the update.
-* `afterSetMyConfig(value, oldValue)`</br>
-  (Optional) Called after the config value has been successfully set and a change has been detected, allowing for side effects or reactions to the new value.
-
-For more details, check out the [Class Config System documentation](https://neomjs.com/dist/production/apps/portal/index.html#/learn/gettingstarted.Config).
-
-</br></br>
-## 🚀 Jump In: Your First Neo.mjs App in Minutes
-
-Run this command:
+## Quickstart
 
 ```bash
 npx neo-app@latest
 ```
 
-This one-liner sets up everything you need to start building with Neo.mjs, including:
+This sets up a new app workspace, a pre-configured app shell, a local development server, and launches your app in a new browser window — all in one go.
 
-* A new app workspace.
-* A pre-configured app shell.
-* A local development server.
-* Launching your app in a new browser window — all in one go.
-
-:book: More details? Check out our [Getting Started Guide](./.github/GETTING_STARTED.md)
-
-:student: Make sure to dive into the [Learning Section](https://neomjs.com/dist/production/apps/portal/#/learn/gettingstarted.Setup)
-
-Next steps:
-
-* :star: **Experience stunning Demos & Examples here**: [Neo.mjs Examples Portal](https://neomjs.com/dist/production/apps/portal/#/examples)
-* Many more are included inside the repos [apps](https://github.com/neomjs/neo/tree/dev/apps)
-  & [examples](https://github.com/neomjs/neo/tree/dev/examples) folders.
-* :blue_book: All Blog Posts are listed here: [Neo.mjs Blog](https://neomjs.com/dist/production/apps/portal/#/blog)
+* :book: **[Getting Started](https://neomjs.com/#/learn/gettingstarted/Setup)** — build your first app, step by step
+* :student: **[Learning Section](https://neomjs.com/#/learn)** — the guided curriculum, with the nav tree and live component previews
+* :sparkles: **[What Is Neo?](https://neomjs.com/#/learn/benefits/Introduction)** — the two-hemisphere organism, with receipts
+* :robot: **[Run Your Own Agent Team](https://github.com/neomjs/neo-agent-brain)** — deploy the Agent OS against your own repositories
 
 </br></br>
-## :handshake: How to Contribute
+## Who This Is For
 
-:hammer_and_wrench: Want to contribute? Check out our [Contributing Guide](https://github.com/neomjs/neo/blob/dev/CONTRIBUTING.md).
+Neo.mjs is a category-shaped substrate. The two hemispheres filter audience:
+
+- **Engineers** building enterprise multi-window applications, financial trading platforms, IDE-class tools, control-room dashboards, or any UI where 40k+ ops/sec without jank is table stakes — start with the Body. The rendering engine is production-ready.
+- **AI architects** building multi-agent systems with persistent memory, cross-family coordination, or runtime-mutable application substrates — start with the [`neo-agent-brain`](https://github.com/neomjs/neo-agent-brain) repository and the Possession Interface.
+- **Researchers** studying autopoietic systems, gated-RSI patterns, or empirical multi-agent organism governance — start with [Discussion #10137 (MX coinage)](https://github.com/orgs/neomjs/discussions/10137) and [Discussion #10119 (harness coordination — graduated to ADR 0020 / Epic #13012)](https://github.com/orgs/neomjs/discussions/10119).
+
+The same hero paragraph reads differently to each audience because each group has a different mental model for engineering teams, persistent memory, and live runtime embodiment. The vocabulary self-filters.
+
+**Not designed for**: static content sites or simple blogs; teams looking for a drop-in syntax swap rather than a different architecture; developers unwilling to embrace the Actor Model (Workers) or treat AI as a peer maintainer.
 
 </br></br>
+## Architecture
+
+Neo.mjs is split into two complementary layers (engine ↔ toolchain):
+
+### The Runtime
+*Runs in the browser. Production-ready. Zero-bloat.*
+- **App Worker** — application logic, state, VDOM diffing
+- **VDom Worker** — Asymmetric VDOM (JSON blueprints diffed off the main thread)
+- **Data Worker** — data processing isolation
+- **Canvas Worker** — 60fps offscreen rendering for high-frequency surfaces (grids, charts)
+- **SharedWorker** — multi-window orchestration; one engine instance, many windows
+- **Main Thread** — restricted to DOM patching only; the neurosurgeon thread
+
+### The Brain (Agent OS)
+*Runs from the sibling [`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain) repository. AI-native.*
+- **Knowledge Base MCP server** — semantic codebase understanding in the unified Chroma store, embedded through local-or-remote providers.
+- **Memory Core MCP server** — agent persistent memory (SQLite Native Edge Graph + ChromaDB episodic)
+- **GitHub Workflow MCP server** — autonomous PR review, issue management, bi-directional sync
+- **Neural Link MCP server** — runtime introspection + mutation of the live App Worker heap
+- **File System MCP server** — sandboxed file IO for internal `Neo.ai.Agent` local loops; frontier harnesses use their native file tools
+- **DreamService** — REM-cycle daemon that distills sessions into Golden Path topology
+
+**Read**: [`learn/benefits/ArchitectureOverview.md`](./learn/benefits/ArchitectureOverview.md)
+
+</br></br>
+## A Platform at Scale
+
+Neo.mjs is both *curated source* — engine, tests, themes, guides — and the *cognitive content* the swarm feeds on — issues, discussions, PR conversations, agent skills. Both are version-controlled; both compound.
+
+As of May 2026 (`sloc` methodology per the [Codebase Overview](./learn/guides/fundamentals/CodebaseOverview.md)): roughly **191,000 lines** of engine source, **306,000 lines** of agent-readable cognitive content, and **36,000 lines** of guides — a curated substrate near **607,000 lines** (over a million counting generated `/dist`), across ~7,200 files and 3,200+ commits in early 2026. Cognitive content is now ~1.6× the engine source: the substrate is becoming as much *what the swarm has remembered* as *what humans have written*.
+
+For the canonical numbers + measurement protocol — and to keep this in lock-step when it drifts more than a month — see the **[Codebase Overview](./learn/guides/fundamentals/CodebaseOverview.md)**.
+
+</br></br>
+## Read Next
+
+- :sparkles: **[The Vision](./.github/VISION.md)** — the philosophy behind the substrate
+- :scroll: **[The Neo.mjs Story](./.github/STORY.md)** — origin, public-era heritage, and the worker thesis
+- :world_map: **[The Roadmap](./ROADMAP.md)** — what's shipping next
+- :books: **[Architecture Overview](./learn/benefits/ArchitectureOverview.md)** — two-hemisphere topology
+- :brain: **[The Dream Pipeline](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/DreamPipeline.md)** — six-phase REM cycle + Golden Path math
+- :gear: **[MX (Model Experience)](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/MX.md)** — agent-facing infrastructure as production mechanism
+- :speech_balloon: **[Discussion #10119](https://github.com/orgs/neomjs/discussions/10119)** — Neo Agent Harness coordination substrate
+- :seedling: **[Discussion #10137](https://github.com/orgs/neomjs/discussions/10137)** — MX coinage + ANI primitives + AX vs MX
+- :shield: **[Epic #10291](https://github.com/neomjs/neo/issues/10291)** — Organism Self-Defense substrate (cloud-phase prerequisite)
+
+</br></br>
+## Community
+
+* **[💬 Discord](https://discord.gg/6p8paPq)** — primary community hub; conversations archived + searchable
+* **[⚡️ Slack](https://join.slack.com/t/neomjs/shared_invite/zt-6c50ueeu-3E1~M4T9xkNnb~M_prEEOA)** — real-time chat (90-day retention on free tier)
+
+</br></br>
+## Contributing
+
+:hammer_and_wrench: **[Contributing Guide](./CONTRIBUTING.md)**
+
+Neo.mjs is co-developed by `@tobiu` (substrate architect + merge-gate authority) and the AI maintainer team (`@neo-opus-ada`, `@neo-opus-grace`, `@neo-opus-vega`, `@neo-fable`, `@neo-fable-clio`, `@neo-gemini-pro`, `@neo-gpt`, `@neo-gpt-emmy`, `@neo-kimi-phoebe`, `@neo-preview`) under gated-RSI by design: the swarm runs the engineering lifecycle via PR, and the founder-architect holds final merge authority as a governance choice. External contributors welcome via the same workflow.
+
+</br></br>
+
 Copyright (c) 2015 - today, [Tobias Uhlig](https://www.linkedin.com/in/tobiasuhlig/)

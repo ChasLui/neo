@@ -167,7 +167,15 @@ class DateSelector extends Component {
 
         me.addDomListeners([
             {click: me.onComponentClick, scope: me},
-            {wheel: me.onComponentWheel, scope: me}
+            {
+                scope: me,
+                wheel: {
+                    bubble : false,
+                    fn     : me.onComponentWheel,
+                    local  : true,
+                    passive: false
+                }
+            }
         ])
     }
 
@@ -861,10 +869,10 @@ class DateSelector extends Component {
         me.getCenterContentEl().cn = [];
         me.createDayViewContent(true);
 
-        // using force => we do want to keep the same ids
-        syncIds && me.syncVdomIds(me.vnode, me.vdom, true);
+        // we need to sync the new ids into the vdom
+        syncIds && me.syncVdomState(me.vnode, me.vdom, true);
 
-        !silent && me.update()
+        me.update()
     }
 
     /**

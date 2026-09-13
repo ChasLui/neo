@@ -1,10 +1,10 @@
-import Base from '../../../src/toolbar/Base.mjs';
+import BaseHeaderToolbar from '../../../src/app/header/Toolbar.mjs';
 
 /**
  * @class Portal.view.HeaderToolbar
- * @extends Neo.container.Base
+ * @extends Neo.app.header.Toolbar
  */
-class HeaderToolbar extends Base {
+class HeaderToolbar extends BaseHeaderToolbar {
     static config = {
         /**
          * @member {String} className='Portal.view.HeaderToolbar'
@@ -17,57 +17,57 @@ class HeaderToolbar extends Base {
          */
         cls: ['portal-header-toolbar'],
         /**
-         * @member {Object} itemDefaults
-         */
-        itemDefaults: {
-            ntype: 'button',
-            ui   : 'ghost'
-        },
-        /**
          * @member {Object[]} items
          */
         items: [{
             cls     : ['logo'],
             iconCls : 'neo-logo-blue',
             minWidth: 60,
+            reference: 'home-button',
             route   : '/home',
             text    : 'Neo.mjs'
         }, '->', {
-            text : 'Learn',
-            route: '/learn'
+            reference: 'learn-button',
+            text     : 'Learn',
+            route    : '/learn'
         }, {
-            text     : 'Blog',
-            reference: 'blog-header-button',
-            route    : '/blog'
+            bind     : {badgeText: 'blogPostCount'},
+            reference: 'news-header-button',
+            route    : '/news',
+            text     : 'News'
         }, {
-            text : 'Examples',
-            route: '/examples'
+            reference: 'examples-button',
+            route    : '/examples',
+            text     : 'Examples'
         }, {
-            text : 'Services',
-            route: '/services'
+            reference: 'services-button',
+            route    : '/services',
+            text     : 'Services'
         }, {
             ntype    : 'container',
             layout   : 'hbox',
             reference: 'header-social-icons',
 
             itemDefaults: {
-                ntype: 'button',
-                ui   : 'ghost'
+                handler: 'onButtonClick',
+                ntype  : 'button',
+                ui     : 'ghost'
             },
 
             items: [{
-                iconCls: 'fa-brands fa-github',
-                url    : 'https://github.com/neomjs/neo',
+                handler: 'onSwitchTheme',
+                iconCls: 'fa-solid fa-moon',
+                reference: 'theme-switch-button',
                 tooltip: {
-                    text     : 'GitHub',
+                    text     : 'Switch Theme',
                     showDelay: 0,
                     hideDelay: 0
                 }
             }, {
-                iconCls: 'fa-brands fa-slack',
-                url    : 'https://join.slack.com/t/neomjs/shared_invite/zt-6c50ueeu-3E1~M4T9xkNnb~M_prEEOA',
+                iconCls: 'fa-brands fa-github',
+                url    : 'https://github.com/neomjs/neo',
                 tooltip: {
-                    text     : 'Join Slack',
+                    text     : 'GitHub',
                     showDelay: 0,
                     hideDelay: 0
                 }

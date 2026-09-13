@@ -1,5 +1,6 @@
 import Base            from './Base.mjs';
 import ClassSystemUtil from '../util/ClassSystem.mjs';
+import NeoArray        from '../util/Array.mjs';
 
 /**
  * @class Neo.controller.Application
@@ -68,20 +69,22 @@ class Application extends Base {
     construct(config) {
         // to guarantee that the main view can access Neo.apps at any point,
         // we need to trigger its assignment at the end of the ctor.
-        let mainView = config.mainView;
+        let {mainView} = config;
         delete config.mainView;
 
         super.construct(config);
 
-        let me = this;
+        let me     = this,
+            {name} = me;
 
-        me.windowId = Neo.config.windowId;
+        me.windowId = config.windowId || Neo.bootingWindowId || Neo.config.windowId;
 
-        Neo.apps = Neo.apps || {};
+        Neo.apps[me.windowId] = me;
 
-        Neo.apps[me.name] = me;
+        Neo.appsByName[name] ??= [];
+        Neo.appsByName[name].push(me);
 
-        Neo.currentWorker.registerApp(me.name);
+        Neo.currentWorker.registerApp(name, me.windowId);
 
         if (mainView) {
             me.mainView = mainView
@@ -96,12 +99,27 @@ class Application extends Base {
      */
     async afterSetMainView(value, oldValue) {
         if (value) {
-            let me = this;
+            let me       = this,
+                {config} = Neo;
 
-            // short delay to ensure changes from onHashChange() got applied
-            await me.timeout(Neo.config.hash ? 200 : 10);
+            // Short delay to ensure changes from onHashChange() got applied
+            await me.timeout(config.hash ? 200 : 10);
 
-            await value.initVnode(true)
+            if (config.useSSR && config.vnode) {
+                // SSR Takeover Path => once vnode and mounted are set, delta-updates can start
+                value.onInitVnode(config.vnode, true);
+
+                // Clean up the config to prevent re-use
+                delete config.vnode;
+
+                // Self-healing: if there happen to be different ids within vdom and vnode,
+                // the vdom worker will create patches as needed.
+                value.updateDepth = -1;
+                value.update()
+            } else {
+                // Standard Client-Side Rendering Path
+                await value.initVnode(true)
+            }
         }
     }
 
@@ -114,11 +132,20 @@ class Application extends Base {
      */
     beforeSetMainView(value, oldValue) {
         if (value) {
-            return ClassSystemUtil.beforeSetInstance(value, null, {
-                appName : this.name,
-                parentId: this.parentId,
-                windowId: Neo.config.windowId
-            })
+            let me       = this,
+                {config} = Neo,
+                instanceConfig = {
+                    appName : me.name,
+                    parentId: me.parentId,
+                    windowId: me.windowId
+                };
+
+            if (config.useSSR && config.vnode) {
+                instanceConfig.autoInitVnode = false;
+                instanceConfig.autoMount     = false
+            }
+
+            return ClassSystemUtil.beforeSetInstance(value, null, instanceConfig)
         }
 
         return null
@@ -129,7 +156,16 @@ class Application extends Base {
      * @param args
      */
     destroy(...args) {
-        Neo.currentWorker.removeAppFromThemeMap(this.name);
+        let me     = this,
+            {name} = me;
+
+        delete Neo.apps[me.windowId];
+
+        if (Neo.appsByName?.[name]) {
+            NeoArray.remove(Neo.appsByName[name], me)
+        }
+
+        Neo.currentWorker.removeAppFromThemeMap(name);
         super.destroy(...args)
     }
 }

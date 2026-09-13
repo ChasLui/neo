@@ -1,10 +1,10 @@
-import AfterMath from './parts/AfterMath.mjs';
-import Colors    from './parts/Colors.mjs';
-import Container from '../../../../src/container/Base.mjs';
-import Features  from './parts/Features.mjs';
-import Helix     from './parts/Helix.mjs';
-import How       from './parts/How.mjs';
-import MainNeo   from './parts/MainNeo.mjs';
+import AiToolchain from './parts/AiToolchain.mjs';
+import Colors      from './parts/Colors.mjs';
+import Container   from '../../../../src/container/Base.mjs';
+import Features    from './parts/Features.mjs';
+import Helix       from './parts/Helix.mjs';
+import HeroContainer from './parts/hero/Container.mjs';
+import How         from './parts/How.mjs';
 
 /**
  * @class Portal.view.home.MainContainer
@@ -18,10 +18,10 @@ class MainContainer extends Container {
          */
         className: 'Portal.view.home.MainContainer',
         /**
-         * @member {String[]} cls=['portal-home-maincontainer']
+         * @member {String[]} cls=['portal-home-maincontainer', 'portal-shared-background']
          * @reactive
          */
-        cls: ['portal-home-maincontainer'],
+        cls: ['portal-home-maincontainer', 'portal-shared-background'],
         /**
          * @member {Object[]} domListeners
          */
@@ -51,12 +51,12 @@ class MainContainer extends Container {
          */
         items: [
             {ntype: 'component', cls: ['portal-home-progress']},
-            MainNeo,
+            HeroContainer,
             Colors,
             Helix,
             How,
             Features,
-            AfterMath
+            AiToolchain
         ],
         /**
          * @member {Boolean} scrollable=true

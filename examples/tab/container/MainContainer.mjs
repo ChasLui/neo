@@ -4,6 +4,7 @@ import NumberField           from '../../../src/form/field/Number.mjs';
 import Radio                 from '../../../src/form/field/Radio.mjs';
 import TextField             from '../../../src/form/field/Text.mjs';
 import TabContainer          from '../../../src/tab/Container.mjs';
+import TabOverflow           from '../../../src/tab/plugin/Overflow.mjs';
 
 /**
  * @summary An interactive example demonstrating the Neo.tab.Container.
@@ -80,15 +81,15 @@ class MainContainer extends ConfigurationViewport {
             id            : 'reverseLayoutDirection',
             listeners     : {change: me.onLayoutSortDirectionChange.bind(me)},
             style         : {marginTop: '10px'},
-            valueLabelText: 'reversed layout sort-direction'
+            valueLabel    : 'reversed layout sort-direction'
         }, {
             module        : CheckBox,
-            checked       : tabContainer.sortable,
+            checked       : tabContainer.dragResortable,
             hideLabel     : true,
             hideValueLabel: false,
-            listeners     : {change: me.onConfigChange.bind(me, 'sortable')},
+            listeners     : {change: me.onConfigChange.bind(me, 'dragResortable')},
             style         : {marginTop: '10px'},
-            valueLabelText: 'sortable'
+            valueLabel    : 'dragResortable'
         }, {
             module        : Radio,
             checked       : tabContainer.tabBarPosition === 'top',
@@ -97,7 +98,7 @@ class MainContainer extends ConfigurationViewport {
             listeners     : {change: me.onTabBarPositionChange.bind(me, 'top')},
             name          : 'tabBarPosition',
             style         : {marginTop: '10px'},
-            valueLabelText: 'top'
+            valueLabel    : 'top'
         }, {
             module        : Radio,
             checked       : tabContainer.tabBarPosition === 'right',
@@ -105,7 +106,7 @@ class MainContainer extends ConfigurationViewport {
             labelText     : '',
             listeners     : {change: me.onTabBarPositionChange.bind(me, 'right')},
             name          : 'tabBarPosition',
-            valueLabelText: 'right'
+            valueLabel    : 'right'
         }, {
             module        : Radio,
             checked       : tabContainer.tabBarPosition === 'bottom',
@@ -113,7 +114,7 @@ class MainContainer extends ConfigurationViewport {
             labelText     : '',
             listeners     : {change: me.onTabBarPositionChange.bind(me, 'bottom')},
             name          : 'tabBarPosition',
-            valueLabelText: 'bottom'
+            valueLabel    : 'bottom'
         }, {
             module        : Radio,
             checked       : tabContainer.tabBarPosition === 'left',
@@ -121,7 +122,7 @@ class MainContainer extends ConfigurationViewport {
             labelText     : '',
             listeners     : {change: me.onTabBarPositionChange.bind(me, 'left')},
             name          : 'tabBarPosition',
-            valueLabelText: 'left'
+            valueLabel    : 'left'
         }, {
             module   : NumberField,
             labelText: 'width',
@@ -138,7 +139,7 @@ class MainContainer extends ConfigurationViewport {
             hideValueLabel: false,
             listeners     : {change: me.onConfigChange.bind(me, 'useActiveTabIndicator')},
             style         : {marginTop: '10px'},
-            valueLabelText: 'useActiveTabIndicator'
+            valueLabel    : 'useActiveTabIndicator'
         }, {
             module   : TextField, // todo: SelectField
             labelText: 'Tab 1 iconCls',
@@ -163,7 +164,7 @@ class MainContainer extends ConfigurationViewport {
             listeners     : {change: me.onBadgeRadioChange.bind(me, 'badgePosition', 'bottom-left')},
             name          : 'badgePosition',
             style         : {marginTop: '50px'},
-            valueLabelText: 'bottom-left'
+            valueLabel    : 'bottom-left'
         }, {
             module        : Radio,
             checked       : me.getBadgeTabHeader().badgePosition === 'bottom-right',
@@ -171,7 +172,7 @@ class MainContainer extends ConfigurationViewport {
             labelText     : '',
             listeners     : {change: me.onBadgeRadioChange.bind(me, 'badgePosition', 'bottom-right')},
             name          : 'badgePosition',
-            valueLabelText: 'bottom-right'
+            valueLabel    : 'bottom-right'
         }, {
             module        : Radio,
             checked       : me.getBadgeTabHeader().badgePosition === 'top-left',
@@ -179,7 +180,7 @@ class MainContainer extends ConfigurationViewport {
             labelText     : '',
             listeners     : {change: me.onBadgeRadioChange.bind(me, 'badgePosition', 'top-left')},
             name          : 'badgePosition',
-            valueLabelText: 'top-left'
+            valueLabel    : 'top-left'
         }, {
             module        : Radio,
             checked       : me.getBadgeTabHeader().badgePosition === 'top-right',
@@ -187,7 +188,7 @@ class MainContainer extends ConfigurationViewport {
             labelText     : '',
             listeners     : {change: me.onBadgeRadioChange.bind(me, 'badgePosition', 'top-right')},
             name          : 'badgePosition',
-            valueLabelText: 'top-right'
+            valueLabel    : 'top-right'
         }, {
             module   : TextField,
             labelText: 'badgeText',
@@ -205,10 +206,21 @@ class MainContainer extends ConfigurationViewport {
      */
     createExampleComponent() {
         return Neo.create(TabContainer, {
-            height  : 300,
-            width   : 500,
-            sortable: true,
-            style   : {margin: '20px'},
+            dragResortable: true,
+            height        : 300,
+            headerActions : [{
+                action    : 'next-tab',
+                contextual: false,
+                iconCls   : 'fas fa-arrow-right'
+            }, {
+                action : 'previous-tab',
+                iconCls: 'fas fa-arrow-left'
+            }],
+            headerToolbar: {
+                plugins: [{module: TabOverflow}]
+            },
+            width: 500,
+            style: {margin: '20px'},
 
             itemDefaults: {
                 ntype: 'component',
@@ -218,20 +230,36 @@ class MainContainer extends ConfigurationViewport {
 
             items: [{
                 header: {iconCls: 'fa fa-home', text: 'Tab 1', flag: 'tab1',},
-                vdom  : {html: 'Tab 1 Content'}
+                vdom  : {html: 'Tab 1 Content', tabIndex: 0}
             }, {
                 header: {iconCls: 'fa fa-play-circle', text: 'Tab 2'},
-                vdom  : {html: 'Tab 2 Content'}
+                vdom  : {html: 'Tab 2 Content', tabIndex: 0}
             }, {
                 header: {iconCls: 'fa fa-user', text: 'Tab 3', badgeText: 'hello'},
-                vdom  : {html: 'Tab 3 Content'}
+                vdom  : {html: 'Tab 3 Content', tabIndex: 0}
             }],
 
             listeners: {
                 activeIndexChange: this.onUserActiveIndexChange,
+                headerAction     : this.onHeaderAction,
                 scope            : this
             }
         })
+    }
+
+    /**
+     * Demonstrates application-owned effects for generic TabContainer header intent.
+     * @param {Object} data
+     * @param {String} data.action
+     * @param {Neo.tab.Container} data.tabContainer
+     */
+    onHeaderAction({action, tabContainer}) {
+        let delta = action === 'next-tab' ? 1 : action === 'previous-tab' ? -1 : 0,
+            count = tabContainer.getCount();
+
+        if (delta && count > 0) {
+            tabContainer.activeIndex = (tabContainer.activeIndex + delta + count) % count
+        }
     }
 
     /**
@@ -240,7 +268,7 @@ class MainContainer extends ConfigurationViewport {
      * @returns {Neo.tab.header.Button}
      */
     getBadgeTabHeader() {
-        let tabHeaders = this.exampleComponent.getTabBar().items,
+        let tabHeaders = this.exampleComponent.getTabButtons(),
             item;
 
         for (item of tabHeaders) {
@@ -256,7 +284,7 @@ class MainContainer extends ConfigurationViewport {
      * @returns {Neo.tab.header.Button}
      */
     getFirstTabHeader() {
-        let tabHeaders = this.exampleComponent.getTabBar().items,
+        let tabHeaders = this.exampleComponent.getTabButtons(),
             item;
 
         for (item of tabHeaders) {

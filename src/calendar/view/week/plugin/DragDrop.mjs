@@ -151,7 +151,7 @@ class DragDrop extends Base {
 
             delete me[newRecordSymbol];
 
-            Neo.applyDeltas(me.appName, {
+            Neo.applyDeltas(me.windowId, {
                 id   : owner.getEventId(record.id),
                 style: {opacity: 1}
             }).then(() => {
@@ -208,7 +208,7 @@ class DragDrop extends Base {
                 endDate,
                 startDate,
                 title     : 'New Event'
-            })[0];
+            }, true)[0];
 
             // we need to cache a reference to make the record accessible for onColumnDragEnd()
             me[newRecordSymbol] = record;
@@ -231,7 +231,7 @@ class DragDrop extends Base {
 
             await me.timeout(50);
 
-            me.isDragging && Neo.applyDeltas(me.appName, {
+            me.isDragging && Neo.applyDeltas(me.windowId, {
                 id   : eventId,
                 style: {opacity: 0}
             })

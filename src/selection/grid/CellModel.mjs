@@ -27,27 +27,59 @@ class CellModel extends BaseModel {
      *
      */
     addDomListener() {
-        let me = this;
+        let me            = this,
+            {view}        = me,
+            {parent}      = view,
+            gridContainer = view.gridContainer || parent, // Fallback if no specific Multi-Body structure
+            listener      = {cellClick: me.onCellClick, scope: me};
 
-        me.view.parent.on('cellClick', me.onCellClick, me)
+        gridContainer.on(listener)
     }
 
     /**
      * @param args
      */
     destroy(...args) {
-        let me = this;
+        let me            = this,
+            {view}        = me,
+            parent        = view?.parent,
+            gridContainer = view?.gridContainer || parent;
 
-        me.view.parent.un('cellClick', me.onCellClick, me);
+        gridContainer?.un('cellClick', me.onCellClick, me);
 
         super.destroy(...args)
+    }
+
+    /**
+     * Resolves a record from a logical cell ID.
+     * @param {String} logicalId
+     * @returns {Neo.data.Record|null}
+     */
+    getRecord(logicalId) {
+        let me        = this,
+            {view}    = me,
+            {store}   = view,
+            dataField = view.getDataField(logicalId),
+            // logicalId format: recordId__dataField
+            recordId  = logicalId.substring(0, logicalId.length - dataField.length - 2);
+
+        return store.get(recordId)
     }
 
     /**
      * @param {Object} data
      */
     onCellClick(data) {
-        this.toggleSelection(data.data.currentTarget)
+        let me                  = this,
+            {view}              = me,
+            {dataField, record} = data;
+
+        // The single View-owned model listens once on the gridContainer, so each cell click is
+        // processed exactly once regardless of which body fired it.
+
+        if (record && dataField) {
+            me.toggleSelection(view.getLogicalCellId(record, dataField))
+        }
     }
 
     /**
@@ -89,10 +121,14 @@ class CellModel extends BaseModel {
 
         if (me.hasSelection()) {
             currentColumn = view.getDataField(me.items[0]);
-            record        = view.getRecord(me.items[0])
+            record        = me.getRecord(me.items[0])
         } else {
             currentColumn = dataFields[0];
             record        = store.getAt(0)
+        }
+
+        if (!record) {
+            return
         }
 
         currentIndex = dataFields.indexOf(currentColumn);
@@ -102,7 +138,7 @@ class CellModel extends BaseModel {
             newIndex += dataFields.length
         }
 
-        me.select(view.getCellId(store.indexOf(record), dataFields[newIndex]));
+        me.select(view.getLogicalCellId(record, dataFields[newIndex]));
 
         view.parent.scrollByColumns(currentIndex, step)
     }
@@ -119,10 +155,14 @@ class CellModel extends BaseModel {
             dataField, newIndex;
 
         if (me.hasSelection()) {
-            currentIndex = store.indexOf(view.getRecord(me.items[0]));
+            currentIndex = store.indexOf(me.getRecord(me.items[0]));
             dataField    = view.getDataField(me.items[0])
         } else {
             dataField = me.dataFields[0]
+        }
+
+        if (countRecords < 1) {
+            return
         }
 
         newIndex = (currentIndex + step) % countRecords;
@@ -131,7 +171,7 @@ class CellModel extends BaseModel {
             newIndex += countRecords
         }
 
-        me.select(view.getCellId(newIndex, dataField));
+        me.select(view.getLogicalCellId(store.getAt(newIndex), dataField));
         view.scrollByRows(currentIndex, step)
     }
 

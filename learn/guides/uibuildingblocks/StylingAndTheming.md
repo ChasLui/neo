@@ -13,7 +13,7 @@ Here are the key pillars of the styling system:
 3.  **SCSS & Theming**: The structure of the SCSS source files and how themes are built.
 4.  **Theme Inheritance**: How themes can extend and override base styles.
 5.  **Build Process**: The scripts used to compile SCSS into CSS.
-6.  **Lazy Loading**: How the framework efficiently loads theme styles on demand.
+6.  **Lazy Loading**: How the engine efficiently loads theme styles on demand.
 
 Let's dive into each of these areas.
 
@@ -62,7 +62,7 @@ To apply CSS classes, use the `cls` config, which accepts an array of strings.
 }
 ```
 
-Neo.mjs will automatically add its own classes for theming and functionality, so your custom classes will be merged with the framework's classes.
+Neo.mjs will automatically add its own classes for theming and functionality, so your custom classes will be merged with the engine's classes.
 
 ### `ui`
 
@@ -115,25 +115,25 @@ This distinction explains the purpose of the different configs:
 -   **`cls`**: An array of CSS classes applied to the component's **logical root node**.
 -   **`wrapperStyle`**: An object of inline styles applied to the component's **outermost node**. This is only needed when the outermost node is different from the logical root.
 -   **`wrapperCls`**: An array of CSS classes applied to the component's **outermost node**, for the same reason as `wrapperStyle`.
--   **`baseCls`**: An array of fundamental CSS classes applied by the component class itself for its core functionality. This is for internal framework use and is automatically merged into the final `cls` array.
+-   **`baseCls`**: An array of fundamental CSS classes applied by the component class itself for its core functionality. This is for internal engine use and is automatically merged into the final `cls` array.
 
 ### Best Practice: `cls` vs. `style`
 
 Whenever possible, it is considered **best practice to use `cls` instead of `style`**. Defining styles in CSS classes keeps your component definitions cleaner and makes your styles more reusable and maintainable.
 
-The `style` config should be reserved for situations where style properties are being calculated dynamically at runtime and are specific to that single component instance. A perfect example is a resizable `Dialog` component. As a user drags the corner of the dialog, the framework will dynamically update its `width` and `height` via the `style` config. These are transient, calculated values that don't belong in a reusable CSS class.
+The `style` config should be reserved for situations where style properties are being calculated dynamically at runtime and are specific to that single component instance. A perfect example is a resizable `Dialog` component. As a user drags the corner of the dialog, the engine will dynamically update its `width` and `height` via the `style` config. These are transient, calculated values that don't belong in a reusable CSS class.
 
 ## 2. VDOM-Based Styles
 
-All component configurations, including `style` and `cls`, are ultimately applied to the component's Virtual DOM (VDOM) tree. The framework then efficiently updates the real DOM based on changes to the VDOM.
+All component configurations, including `style` and `cls`, are ultimately applied to the component's Virtual DOM (VDOM) tree. The engine then efficiently updates the real DOM based on changes to the VDOM.
 
-When you change a style-related config at runtime, the component's `afterSet` hook for that config (e.g., `afterSetStyle()`) is triggered. This hook updates the VDOM, and the framework's rendering engine applies the changes to the live DOM. This reactive system ensures that UI updates are fast and automatic.
+When you change a style-related config at runtime, the component's `afterSet` hook for that config (e.g., `afterSetStyle()`) is triggered. This hook updates the VDOM, and the engine's rendering pipeline applies the changes to the live DOM. This reactive system ensures that UI updates are fast and automatic.
 
 ### Where to Apply Styles: A Critical Distinction
 
 To avoid conflicts and ensure the reactive system works correctly, it is critical to follow this rule:
 
--   **For the component's root VDOM node(s):** Always use the component-level configs (`cls`, `style`, `wrapperCls`, `wrapperStyle`). Do **not** add `cls` or `style` attributes directly to the root node within the `vdom` object itself. This allows the framework to manage these styles reactively. If you set them directly on the VDOM root, your styles could be overwritten by a config change, or they could conflict with it.
+-   **For the component's root VDOM node(s):** Always use the component-level configs (`cls`, `style`, `wrapperCls`, `wrapperStyle`). Do **not** add `cls` or `style` attributes directly to the root node within the `vdom` object itself. This allows the engine to manage these styles reactively. If you set them directly on the VDOM root, your styles could be overwritten by a config change, or they could conflict with it.
 
 -   **For all other descendant VDOM nodes:** Use the standard inline `cls` (as an array) and `style` (as an object) attributes directly inside the VDOM structure. This is the correct and intended way to style the inner parts of your component.
 
@@ -176,13 +176,44 @@ Within each of these folders, the SCSS files are organized to mirror the compone
 -   `resources/scss/theme-light/button/Base.scss`
 -   `resources/scss/theme-dark/button/Base.scss`
 
+### The Browser Reads a Build, Not Your SCSS
+
+In development Neo.mjs serves **JavaScript from source** as native ES modules, so a class change is live on reload. **CSS is different:** the browser loads compiled stylesheets from `dist/development/css/`, which are only as fresh as your last theme build. Edit an `.scss` file without rebuilding and you get current JS against an older stylesheet — a render that is confidently wrong, and whose first suspect is always your component code rather than the build.
+
+**The workflow that makes that state impossible** — two steps, and worth making a habit:
+
+1. **On a fresh checkout — and after any `git pull` or branch switch that brings someone else's SCSS**, build the themes:
+
+    ```bash readonly
+    npm run build-themes -- -n -e dev -t all
+    ```
+
+    Those flags are not optional decoration: without `-n` the script stops to *ask* you which themes and environment to build, and `-e dev -t all` is what produces the full set the browser and the suites expect. This is the exact string the watcher, the dev server and the e2e preflight all print when they refuse — they share one constant, so the command you are told to run is always the command documented here.
+
+    The compiled CSS is gitignored, so it never travels with a pull or a branch switch. The watcher only rebuilds what it *observes changing*, which means incoming SCSS is covered when the watcher happens to be running and missed entirely when it is not. Rebuilding after a pull costs seconds and removes the question.
+
+2. **Before you start editing SCSS**, start the watcher and leave it running:
+
+    ```bash readonly
+    npm run watch-themes
+    ```
+
+    It recompiles each `.scss` you touch, so the built CSS cannot fall behind your sources while you work.
+
+The watcher is also your safety net if you skip step 1: it **refuses to start** against an incomplete or stale build, names exactly which outputs are missing or stale, and prints the rebuild command. A watcher that started anyway would silently paper over the problem, so a startup failure here is the feature.
+
+Two things worth knowing about the failure mode itself:
+
+- `npm run server-start` warns when served CSS trails your SCSS, but **that warning is a dev-server feature.** Serve the same app from anything else — an IDE's built-in web server, `python -m http.server`, nginx — and there is no signal at all.
+- The browser-based suites never run against a stale build, by two different mechanisms: the **e2e and component** suites *materialize* fresh assets in their shared `globalSetup`, while the **visual** suite *refuses to run* and points you at the rebuild. Either way a green suite is **not** evidence that what you are looking at in your own browser is current — the suites fixed their own inputs, not yours.
+
 ## 4. SCSS File & Namespace Mapping
 
 For the automatic lazy-loading of theme files to work, it is **critical** that the path of an SCSS file mirrors the namespace of the JavaScript class it styles. The build process uses this convention to generate the `theme-map.json`.
 
-### Framework Components
+### Engine Components
 
-For standard framework components, the mapping is direct. The path within `resources/scss/src` (or a theme folder) matches the class path after `Neo.`.
+For standard engine components, the mapping is direct. The path within `resources/scss/src` (or a theme folder) matches the class path after `Neo.`.
 
 -   **JS Class:** `src/button/Base.mjs` (which defines `Neo.button.Base`)
 -   **Maps to SCSS:** `resources/scss/src/button/Base.scss`
@@ -194,31 +225,11 @@ Applications follow a similar rule, but with one important exception: the `view`
 -   **JS Class:** `apps/portal/view/Viewport.mjs` (defines `Portal.view.Viewport`)
 -   **Maps to SCSS:** `resources/scss/src/apps/portal/Viewport.scss`
 
-Notice how `view/` is not present in the SCSS path. The framework's build tools and runtime loader are specifically coded to handle this convention. Adhering to it is essential for your application's styles to be loaded correctly.
-
-## 4. SCSS File & Namespace Mapping
-
-For the automatic lazy-loading of theme files to work, it is **critical** that the path of an SCSS file mirrors the namespace of the JavaScript class it styles. The build process uses this convention to generate the `theme-map.json`.
-
-### Framework Components
-
-For standard framework components, the mapping is direct. The path within `resources/scss/src` (or a theme folder) matches the class path after `Neo.`.
-
--   **JS Class:** `src/button/Base.mjs` (which defines `Neo.button.Base`)
--   **Maps to SCSS:** `resources/scss/src/button/Base.scss`
-
-### Application Components (The `view` rule)
-
-Applications follow a similar rule, but with one important exception: the `view` folder in the JavaScript path is **omitted** from the SCSS path. It is a mandatory convention that only components inside an application's `view` folder should have associated SCSS files.
-
--   **JS Class:** `apps/portal/view/Viewport.mjs` (defines `Portal.view.Viewport`)
--   **Maps to SCSS:** `resources/scss/src/apps/portal/Viewport.scss`
-
-Notice how `view/` is not present in the SCSS path. The framework's build tools and runtime loader are specifically coded to handle this convention. Adhering to it is essential for your application's styles to be loaded correctly.
+Notice how `view/` is not present in the SCSS path. The engine's build tools and runtime loader are specifically coded to handle this convention. Adhering to it is essential for your application's styles to be loaded correctly.
 
 ## 5. Theme Inheritance
 
-The theming engine uses a powerful and automatic inheritance model. You **do not** need to manually `@import` base styles into your theme's SCSS files. The framework handles this for you at runtime.
+The theming engine uses a powerful and automatic inheritance model. You **do not** need to manually `@import` base styles into your theme's SCSS files. The engine handles this for you at runtime.
 
 Here's how it works: When a component is created, the `insertThemeFiles()` method (in `src/worker/App.mjs`) inspects the component's entire JavaScript prototype chain. It walks **up** the chain from the component's class (e.g., `MyApp.view.CustomButton`) through its parents (like `Neo.button.Base`, `Neo.component.Base`, etc.) and loads the corresponding CSS file for each class that has one.
 
@@ -242,7 +253,7 @@ A theme file can therefore be very clean and focused:
 }
 ```
 
-You can also create your own themes that inherit from the existing Neo.mjs themes. The same principle applies: the framework will load the base theme's CSS first, followed by your new theme's CSS.
+You can also create your own themes that inherit from the existing Neo.mjs themes. The same principle applies: the engine will load the base theme's CSS first, followed by your new theme's CSS.
 
 ## 6. Architecting Nestable Themes
 
@@ -291,6 +302,28 @@ The dark theme provides a value for the border variable.
 ```
 The light theme explicitly sets the border variable to `0`. This is called **nullification**. It's critical for nesting. If a light-themed list is placed inside a dark-themed component, this rule ensures the list does not incorrectly inherit the dark theme's 1px border. It actively resets the property defined in the `src` structure.
 
+### Engine Value Sheets Declare at `:where()` Weight
+
+An application projects its own palette into an engine token family at theme-root — `:root .neo-theme-neo-dark { --tooltip-bg: var(--my-panel) }` — and expects to win. Whether it does is a specificity contest, not a load-order one, only if the engine's own value sheet weighs less than the projection. A value sheet that declares at `:root .neo-theme-neo-dark` has the same weight as the projection, (0,2,0), and the tie goes to whichever sheet the browser saw last; the engine appends its per-class theme sheets as components mount, after the application's own, so the engine wins and the projection appears to do nothing.
+
+The engine's value sheets therefore declare at `:where(.neo-theme-neo-dark)` weight — zero specificity — so a projection at theme-root outranks them wherever both match. A component that carries its own theme class (the shared tooltip stamps the hovered target's theme onto itself) is matched by both the engine sheet and the projection, so the contest is decided on that element as well, not left to inheritance.
+
+```scss readonly
+// engine: resources/scss/theme-neo-dark/tooltip/Base.scss
+:where(.neo-theme-neo-dark) {
+    --tooltip-bg: var(--sem-color-surface-primary-default);
+}
+
+// application: theme-neo-dark/apps/myapp/Viewport.scss
+:root .neo-theme-neo-dark {
+    --tooltip-bg: var(--myapp-panel-2);
+}
+```
+
+Families move to this weight one at a time, each measured before it moves, because a sheet's own rules may have relied on outranking an equal-weight structure rule. While a family still declares at theme-root weight, project into it with more specificity than the engine sheet — an element-scoped rule such as `body:has(.myapp-viewport) .neo-tooltip` — rather than relying on load order.
+
+Which families have moved is a property of the tree, not of this sentence: `grep -rl ':where(.neo-theme-neo-dark)' resources/scss/theme-neo-dark` answers it, and stays right without an edit here.
+
 ### Bad Practice & The Right Way Forward
 
 While you technically *can* add new selectors or structural overrides inside a theme file, it is considered **bad practice** if you want your theme to be nestable and composable with other themes. Doing so can lead to unpredictable side effects when themes are mixed and matched.
@@ -302,7 +335,7 @@ There might be cases where your custom design requires styling a part of a compo
 1.  **Temporarily add the selector to your theme:** To keep your project moving, it is acceptable to add the new structural selector directly into your theme's SCSS file as a temporary measure.
 2.  **Open a feature request:** Immediately after, you should open a feature request ticket in the [Neo.mjs GitHub repository](https://github.com/neomjs/neo/issues). The ticket should describe the component you are styling and the new selector(s) you need.
 
-This process allows you to continue your work without being blocked, while also contributing back to the framework. Once the new selectors are added to the `src` files in a future Neo.mjs update, you can refactor your theme to remove the temporary structural code and use the new, official CSS variables instead. This keeps themes clean and aligned with the framework's architecture for the long term.
+This process allows you to continue your work without being blocked, while also contributing back to the engine. Once the new selectors are added to the `src` files in a future Neo.mjs update, you can refactor your theme to remove the temporary structural code and use the new, official CSS variables instead. This keeps themes clean and aligned with the engine's architecture for the long term.
 
 If you are creating a one-off, custom theme that will never be nested, this rule is less critical. However, for creating robust, reusable themes, sticking to the "structure vs. skin" separation is essential.
 
@@ -342,7 +375,7 @@ The most efficient and recommended way to create a new theme is to start with an
 
 While the concepts above apply everywhere, it's important to understand *where* you should place your custom theme files when developing your own application. For this, Neo.mjs uses a **workspace** structure, typically created with `npx neo-app`.
 
-A workspace mirrors the main `neo.mjs` repository structure, including its own `resources/scss` directory. This allows you to add themes and styles for your custom applications without modifying the framework's source code (which is included as an npm dependency in `node_modules`).
+A workspace mirrors the main `neo.mjs` repository structure, including its own `resources/scss` directory. This allows you to add themes and styles for your custom applications without modifying the engine's source code (which is included as an npm dependency in `node_modules`).
 
 ### The SCSS Merge Mechanism
 
@@ -352,15 +385,15 @@ The workspace's files act as an overlay, giving you fine-grained control.
 
 This enables several powerful workflows:
 
-1.  **Override Specific Variables:** To change just a few variables for an existing theme (e.g., `theme-dark`), you only need to create a file at the corresponding path in your workspace (e.g., `my-workspace/resources/scss/theme-dark/button/Base.scss`) and redefine only the variables you want to change. The build script will merge your changes with the original theme file from the framework.
+1.  **Override Specific Variables:** To change just a few variables for an existing theme (e.g., `theme-dark`), you only need to create a file at the corresponding path in your workspace (e.g., `my-workspace/resources/scss/theme-dark/button/Base.scss`) and redefine only the variables you want to change. The build script will merge your changes with the original theme file from the engine.
 
-2.  **Create an Entirely New Theme:** You can create a brand new theme folder (e.g., `my-workspace/resources/scss/theme-corporate`) inside your workspace. By creating SCSS files that match the paths of the framework components, you can provide a complete set of CSS variable definitions for your theme. The build script will discover and compile your new theme, allowing you to build a unique look and feel from the ground up without ever touching the framework's source code.
+2.  **Create an Entirely New Theme:** You can create a brand new theme folder (e.g., `my-workspace/resources/scss/theme-corporate`) inside your workspace. By creating SCSS files that match the paths of the engine components, you can provide a complete set of CSS variable definitions for your theme. The build script will discover and compile your new theme, allowing you to build a unique look and feel from the ground up without ever touching the engine's source code.
 
-3.  **Style App-Specific Components:** If you create a component that is only used within a single application (e.g., `my-workspace/apps/my-app/view/MyComponent.mjs`), you can create its structural styles in your workspace at `my-workspace/resources/scss/src/apps/my-app/MyComponent.scss`. The build script will pick it up and process it just like a framework component.
+3.  **Style App-Specific Components:** If you create a component that is only used within a single application (e.g., `my-workspace/apps/my-app/view/MyComponent.mjs`), you can create its structural styles in your workspace at `my-workspace/resources/scss/src/apps/my-app/MyComponent.scss`. The build script will pick it up and process it just like a core component.
 
 4.  **Style Workspace-Shared Components:** For components intended to be shared across multiple apps in your workspace, you can create them in the workspace's main `src` folder. These components must use the `Neo` namespace (e.g., `my-workspace/src/component/MyWorkspaceWidget.mjs` defining `Neo.component.MyWorkspaceWidget`). You can then provide their structural styles in the corresponding path within your workspace's `resources/scss/src` folder (e.g., `my-workspace/resources/scss/src/component/MyWorkspaceWidget.scss`).
 
-This overlay approach is extremely powerful. It lets you maintain a clean separation between your application code and the framework, making framework upgrades significantly easier.
+This overlay approach is extremely powerful. It lets you maintain a clean separation between your application code and the engine, making engine upgrades significantly easier.
 
 ## 9. The Build Process
 
@@ -376,20 +409,24 @@ The `npm run build-themes` command is the main script for a full theme build. It
 
 The `theme-map.json` file creates a mapping between every class name and the themes that have custom styles for it. This file is the key to the lazy loading mechanism.
 
+A full build **regenerates** the map from the effective SCSS tree on every run — it does not merge the previous map, so deleting or renaming an SCSS file removes its key on the next build. The one merge that remains is the workspace overlay (§8): a workspace build seeds from the *engine's* map so engine components stay resolvable, then overlays the workspace's own scan.
+
 ### `watch-themes`
 
-For development, you can use `npm run watch-themes`. This script will watch the `resources/scss` directory for any changes and recompile only the file that was changed. This provides a much faster feedback loop when you are developing themes.
+For development, you can use `npm run watch-themes`. Existing non-partial files stay on the fast path: the watcher recompiles only the file whose content changed.
 
-**Important Note:** The current version of `watch-themes` only handles changes to *existing* files. It does **not** detect new files, renamed files, or deleted files. As a result, if you add, move, or delete SCSS files while the watcher is running, the `theme-map.json` will not be updated, which can lead to inconsistencies. To apply these kinds of changes, you can run a full `npm run build-themes` command in a separate terminal. Enhancing the watch script to handle these cases is a planned improvement.
+Run `npm run build-themes -- -n -e dev -t all` once before starting the watcher. The watcher refuses to start when the development CSS or generated map is missing, stale, incomplete, or borrowed through a symbolic link.
 
-## 9. Lazy Loading in Action
+Structural events use a wider source-census reconciliation. Adding or renaming an entry builds every newly discovered or stale output; deleting or renaming an entry removes retired CSS and source maps; and each structural pass replaces both development copies of `theme-map.json` from the effective framework-plus-workspace SCSS tree. A partial change rebuilds its owning `src` or theme root (shared mixins rebuild all roots), so a broken importer produces a visible error instead of silently retaining stale CSS.
 
-You do not need to manually include any theme CSS files in your application's `index.html`. The framework handles it automatically.
+## 10. Lazy Loading in Action
+
+You do not need to manually include any theme CSS files in your application's `index.html`. The engine handles it automatically.
 
 Here's how it works:
 
 1.  When the application starts, the `worker.App` loads the `theme-map.json` file.
-2.  When a component is about to be created, the framework checks the `theme-map.json` to see if the active theme has a specific CSS file for that component.
+2.  When a component is about to be created, the engine checks the `theme-map.json` to see if the active theme has a specific CSS file for that component.
 3.  If it does, it sends a message to the `main.addon.Stylesheet` (in the main thread) to dynamically create a `<link>` tag for that CSS file and add it to the document's `<head>`.
 4.  The browser then loads the CSS file.
 
@@ -397,9 +434,9 @@ This process ensures that you only ever load the CSS that is actually needed for
 
 ### VDOM Updates and Style Loading
 
-The lazy loading of styles is tightly integrated with the framework's rendering engine to prevent a "flash of unstyled content" (FOUC) and unnecessary layout recalculations.
+The lazy loading of styles is tightly integrated with the rendering engine to prevent a "flash of unstyled content" (FOUC) and unnecessary layout recalculations.
 
-Imagine you are showing a complex component, like a grid, for the first time. The framework will trigger the lazy loading of the grid's theme CSS. If a VDOM update for the grid were to proceed immediately, the browser might render the grid's DOM structure *before* its styles have arrived, causing a flicker or a jarring layout shift once the styles are applied.
+Imagine you are showing a complex component, like a grid, for the first time. The engine will trigger the lazy loading of the grid's theme CSS. If a VDOM update for the grid were to proceed immediately, the browser might render the grid's DOM structure *before* its styles have arrived, causing a flicker or a jarring layout shift once the styles are applied.
 
 To prevent this, the `updateVdom()` method in `src/mixin/VdomLifecycle.mjs` contains a crucial check. It looks at the `Neo.worker.App` instance to see if any theme files are currently being loaded (`countLoadingThemeFiles > 0`). If they are, it will pause the VDOM update for the component and listen for a `themeFilesLoaded` event. Once all pending CSS files have been loaded, the VDOM update is automatically resumed.
 

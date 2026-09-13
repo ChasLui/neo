@@ -1,4 +1,4 @@
-import { setup } from '../../setup.mjs';
+import {setup} from '../../setup.mjs';
 
 const appName = 'CollectionBaseTest';
 
@@ -8,11 +8,12 @@ setup({
     }
 });
 
-import { test, expect } from '@playwright/test';
-
+import {test, expect}  from '@playwright/test';
 import Neo             from '../../../../src/Neo.mjs';
 import * as core       from '../../../../src/core/_export.mjs';
 import Collection      from '../../../../src/collection/Base.mjs';
+import Model           from '../../../../src/data/Model.mjs';
+import RecordFactory   from '../../../../src/data/RecordFactory.mjs';
 import InstanceManager from '../../../../src/manager/Instance.mjs';
 
 /**
@@ -77,6 +78,26 @@ test.describe.serial('Neo.collection.Base', () => {
         ]);
 
         expect(collection.indexOf('elmasse')).toBe(4);
+    });
+
+    test('Classify null as non-item while preserving object-like items', () => {
+        const nullCollection = Neo.create(Collection, {
+            items: [{id: 'keep'}]
+        });
+        const model = Neo.create(Model, {
+            fields: [{name: 'id'}]
+        });
+        const record      = RecordFactory.createRecord(model, {id: 'record'});
+        const neoInstance = Neo.create(Collection, {items: []});
+
+        expect(nullCollection.isItem(null)).toBe(false);
+        expect(nullCollection.isItem({id: 'plain'})).toBe(true);
+        expect(nullCollection.isItem(record)).toBe(true);
+        expect(nullCollection.isItem(neoInstance)).toBe(true);
+
+        expect(() => nullCollection.remove(null)).not.toThrow();
+        expect(nullCollection.count).toBe(1);
+        expect(nullCollection.getRange()).toEqual([{id: 'keep'}]);
     });
 
     test('Sort collection items', () => {
@@ -329,5 +350,67 @@ test.describe.serial('Neo.collection.Base', () => {
         // Move to start
         moveCollection.move(4, 0);
         expect(moveCollection.getRange()).toEqual([{id: 'a'}, {id: 'b'}, {id: 'c'}, {id: 'd'}, {id: 'e'}]);
+    });
+
+    test('Filter collection with undefined items', () => {
+        let collection = Neo.create(Collection, {
+            items: [
+                {id: 1, value: 'a'},
+                {id: 2, value: 'b'}
+            ]
+        });
+
+        // Simulate data corruption
+        collection._items.push(undefined);
+        collection.count++;
+
+        // Apply filter
+        collection.filters = [{
+            property: 'value',
+            value   : 'a'
+        }];
+
+        // Should not throw and result should exclude undefined
+        expect(collection.count).toBe(1);
+        expect(collection.getAt(0).id).toBe(1);
+    });
+    test('updateKey on unfiltered and filtered collections', () => {
+        let collection = Neo.create(Collection, {
+            keyProperty: 'id',
+            items: [
+                {id: 1, name: 'Alice', active: true},
+                {id: 2, name: 'Bob',   active: false},
+                {id: 3, name: 'Charlie', active: true}
+            ]
+        });
+
+        // Test updateKey on unfiltered collection
+        let item1 = collection.get(1);
+        collection.updateKey(item1, 10);
+        
+        expect(collection.get(1) || null).toBeNull();
+        expect(collection.get(10)).toBe(item1);
+        expect(item1.id).toBe(10);
+
+        // Filter the collection
+        collection.filters = [{
+            property: 'active',
+            value   : true
+        }];
+
+        expect(collection.count).toBe(2);
+        expect(collection.allItems.count).toBe(3);
+
+        // Test updateKey on filtered collection
+        let item3 = collection.get(3);
+        collection.updateKey(item3, 30);
+
+        expect(collection.get(3) || null).toBeNull();
+        expect(collection.get(30)).toBe(item3);
+        expect(item3.id).toBe(30);
+
+        // Verify that allItems is also updated correctly
+        expect(collection.allItems.get(3) || null).toBeNull();
+        expect(collection.allItems.get(30)).toBe(item3);
     });
 });

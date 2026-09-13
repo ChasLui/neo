@@ -193,7 +193,12 @@ class Text extends Field {
          */
         labelPosition_: 'left',
         /**
-         * @member {String} labelText_='LabelText'
+         * The label text or VDOM.
+         * Supports:
+         * - String: Renders as safe text (textContent).
+         * - Object: A single VDOM object.
+         * - Object[]: An array of VDOM objects.
+         * @member {Object|Object[]|String} labelText_='LabelText'
          * @reactive
          */
         labelText_: 'LabelText',
@@ -401,9 +406,9 @@ class Text extends Field {
             let me = this;
 
             Neo.main.DomEvents.registerDisabledInputChars({
-                appName: me.appName,
-                chars  : value,
-                id     : me.getInputEl().id
+                chars   : value,
+                id      : me.getInputEl().id,
+                windowId: me.windowId
             })
         }
     }
@@ -464,12 +469,11 @@ class Text extends Field {
     }
 
     /**
-     * Triggered after the id config got changed
-     * @param {String} value
-     * @param {String} oldValue
      * @protected
      */
-    afterSetId(value, oldValue) {
+    ensureStableIds() {
+        super.ensureStableIds();
+
         let me        = this,
             inputEl   = me.getInputEl(),
             inputElId = me.getInputElId(),
@@ -477,10 +481,7 @@ class Text extends Field {
 
         inputEl.id  = inputElId;
         labelEl.id  = me.getLabelId();
-        labelEl.for = inputElId;
-
-        // silent vdom update, the super call will trigger the engine
-        super.afterSetId(value, oldValue)
+        labelEl.for = inputElId
     }
 
     /**
@@ -614,19 +615,36 @@ class Text extends Field {
 
     /**
      * Triggered after the labelText config got changed
-     * @param {String} value
-     * @param {String} oldValue
+     * @param {Object|Object[]|String} value
+     * @param {Object|Object[]|String} oldValue
      * @protected
      */
     afterSetLabelText(value, oldValue) {
         let me      = this,
-            isEmpty = me.isEmpty();
+            isEmpty = me.isEmpty(),
+            labelEl = me.getLabelEl();
 
         if (me.labelId) {
-            value = `<span class="${me.labelIdCls.join(',')}">${me.labelId}</span>${me.labelIdSeparator + value}`
-        }
+            value = [{
+                tag : 'span',
+                cls : me.labelIdCls,
+                text: me.labelId
+            }, {
+                tag : 'span',
+                text: me.labelIdSeparator
+            }, ...(Array.isArray(value) ? value : (Neo.isString(value) ? [{text: value}] : [value]))];
 
-        me.getLabelEl().html = value;
+            labelEl.cn = value;
+            delete labelEl.text
+        } else {
+            if (Neo.isString(value)) {
+                labelEl.text = value;
+                delete labelEl.cn
+            } else {
+                labelEl.cn = Array.isArray(value) ? value : [value];
+                delete labelEl.text
+            }
+        }
 
         if (!me.hideLabel) {
             if (me.labelPosition === 'inline') {
@@ -1101,14 +1119,14 @@ class Text extends Field {
 
         if (me.disabledChars) {
             Neo.main.DomEvents.unregisterDisabledInputChars({
-                appName: me.appName,
-                id     : me.getInputEl().id
+                id      : me.getInputEl().id,
+                windowId: me.windowId
             })
         }
 
         me.triggers?.forEach(trigger => {
             trigger.destroy()
-        })
+        });
 
         super.destroy(...args)
     }
@@ -1558,12 +1576,13 @@ class Text extends Field {
      */
     updateInputWidth() {
         let me         = this,
+            inputEl    = me.vdom.cn[2],
             inputWidth = me.getInputWidth();
 
         if (inputWidth !== null && inputWidth !== me.width) {
-            me.vdom.cn[1].width = inputWidth
+            inputEl.width = inputWidth
         } else {
-            delete me.vdom.cn[1].width
+            delete inputEl.width
         }
 
         me.update()
@@ -1660,6 +1679,33 @@ class Text extends Field {
         !me.clean && me.updateError(me._error, silent);
 
         return !returnValue ? false : super.validate(silent)
+    }
+    /**
+     * Serializes the field into a JSON-compatible object.
+     * @returns {Object}
+     */
+    toJSON() {
+        let me = this;
+
+        return {
+            ...super.toJSON(),
+            autoCapitalize : me.autoCapitalize,
+            autoComplete   : me.autoComplete,
+            clearable      : me.clearable,
+            editable       : me.editable,
+            hideLabel      : me.hideLabel,
+            inputPattern   : me.inputPattern?.toString(),
+            inputType      : me.inputType,
+            inputValue     : me.inputValue,
+            labelPosition  : me.labelPosition,
+            labelText      : me.labelText,
+            maxLength      : me.maxLength,
+            minLength      : me.minLength,
+            placeholderText: me.placeholderText,
+            readOnly       : me.readOnly,
+            required       : me.required,
+            triggers       : me.triggers?.map(trigger => trigger.toJSON())
+        }
     }
 }
 
