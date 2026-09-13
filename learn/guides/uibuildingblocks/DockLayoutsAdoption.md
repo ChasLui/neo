@@ -356,10 +356,13 @@ fail-closed result objects — gate on `errors` before you trust either:
 ```javascript readonly
 import Persistence from '../../../src/dashboard/dock/model/Persistence.mjs';
 
-// save the live arrangement — an invalid document refuses to serialize: `layout` stays null
+// save the live arrangement — an invalid document refuses to serialize: `layout` stays null.
+// The metadata is yours; spreading the workspace's provenance into it records the declared
+// name the snapshot was taken under as `metadata.declaredPerspective`
 const {layout, errors} = Persistence.createSavedLayout(this.getDockZoneDocument(), {
     layoutId: 'review-setup',
-    title   : 'Review setup'
+    title   : 'Review setup',
+    metadata: {...this.perspectiveProvenance()}
 });
 
 if (!errors.length) {
@@ -370,7 +373,13 @@ if (!errors.length) {
 // preview-contaminated envelope is refused WHOLE, `document` stays null, the errors say why
 const restored = Persistence.restoreSavedLayout(layout);
 
-restored.document && this.onDockZoneDocumentChange(restored.document)
+// the document alone restores the arrangement beside the committed declared baseline, and the
+// Modified badge then reports the distance; carrying the snapshot's origin in the descriptor makes
+// a standalone workspace adopt that declared name again — when it declares it. Under a Group the
+// descriptor is not the path: the origin rides the Group write (see below)
+restored.document && this.onDockZoneDocumentChange(restored.document, {
+    declaredPerspective: layout.metadata.declaredPerspective
+})
 ```
 
 `PerspectiveLibrary.createSavedLayoutCollection` and `PerspectiveLibrary.restoreActiveSavedLayout` lift the same
@@ -378,6 +387,30 @@ discipline to named perspective sets — the example's perspective toolbar is th
 reload. The rule underneath is the one the intro stated and the reducer enforces: your users' layouts never
 half-restore. A saved layout either validates completely or it is rejected completely, and runtime-only preview state
 can never leak into a persisted document — `createSavedLayout` refuses to serialize it.
+
+Saved layouts are one of **two name sources**, and not the authoritative one. The arrangements a workspace
+*declares* — `perspectives`, a map of names to zones, selected through the reactive `activePerspective_` — are the
+names it answers to; a saved record is a snapshot, with provenance when its capture asked for it. The two never trade
+places, and the refusal has two reaches. Every write path, the static collection helpers included, refuses a
+`$`-prefixed engine-reserved name. A *declared* name is refused by a library instance that knows its workspace —
+`declaredPerspectives: () => workspace.declaredPerspectives()` on `PerspectiveLibrary` or `TopologyLibrary` — on both
+the product name and the technical `layoutId`, on save and on rename; a library left at its default, or the static
+helpers, cannot know the declared set, and a consumer on that path passes it into
+`Persistence.reservedNameErrors(keys, workspace.declaredPerspectives())` itself, as the example does for its
+collection. Provenance is the capture's choice: `metadata: {...workspace.perspectiveProvenance()}` records
+`metadata.declaredPerspective` from the accepted write — an auto-save that captures inside the commit listener still
+names the arrangement it was taken under — and a capture without it stores an empty `metadata`. Restoring the
+document alone never moves the selection: the committed declared baseline stays, and *Modified* reports the distance.
+On a standalone workspace, a restore whose descriptor carries `declaredPerspective` adopts that name when the
+workspace declares it; an origin the workspace does not declare, or none, keeps the committed baseline; the selection
+never becomes null. Under a Group the restore descriptor is not the path: a document restore becomes a Group write
+that carries the document alone, so the origin has to ride that write as the identity entry
+`perspectiveOriginChange(metadata)` returns — the accepted-write path the Group adopts beside the document. The example's
+toolbar shows both sources side by side: one button per declared name binds `dock.perspective.active` and writes
+`activePerspective`, the *Modified* badge reads `dock.perspective.modified`, and its snapshot buttons restore a
+document beside the declared baseline on purpose — those captures carry no provenance, so a restored snapshot reads
+as a modification of the declared arrangement it differs from. Selecting a saved name through the config is
+deliberately not offered; a snapshot is restored, a declaration is selected.
 
 ## The tear-out window's render target
 
