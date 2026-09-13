@@ -9,6 +9,7 @@ setup({
 import {test, expect}           from '@playwright/test';
 import Neo                      from '../../../../../src/Neo.mjs';
 import * as core                from '../../../../../src/core/_export.mjs';
+import DockLayoutAdapter        from '../../../../../src/dashboard/dock/projection/LayoutAdapter.mjs';
 import DockProjectionReconciler from '../../../../../src/dashboard/dock/projection/Reconciler.mjs';
 import WorkspaceDocument        from '../../../../../src/dashboard/dock/model/WorkspaceDocument.mjs';
 import Operations               from '../../../../../src/dashboard/dock/model/Operations.mjs';
@@ -3810,5 +3811,17 @@ test.describe('Workstation reset to the shipped arrangement (#18553)', () => {
         });
 
         expect(result).toEqual({errors: ['the main workspace is not registered'], reset: false, transactionId: null})
+    })
+});
+
+test.describe('Workstation rail reveal extent', () => {
+    test('a railed pane resolves its owning edge extent, not the fail-soft null', () => {
+        expect(initialDocument.items.graph.autoHidden,     'graph is railed in the shipped document').toBe(true);
+        expect(initialDocument.items.inspector.autoHidden, 'inspector is railed too').toBe(true);
+
+        // Railing is derived at projection time, so the committed document still lists each railed
+        // pane in its tabs node, and the resolver answers the owning edge, never a nested split share.
+        expect(DockLayoutAdapter.resolveRevealExtent(initialDocument, 'graph'),     'the left edge').toBeCloseTo(0.11);
+        expect(DockLayoutAdapter.resolveRevealExtent(initialDocument, 'inspector'), 'the bottom edge').toBeCloseTo(0.17)
     })
 });
